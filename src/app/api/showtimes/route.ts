@@ -2,11 +2,80 @@ import { NextRequest, NextResponse } from "next/server";
 import { DateTime } from "luxon";
 import { prisma } from "@/lib/db";
 import { THEATRE_TIMEZONE } from "@/lib/theatres";
+import snapshot from "@/data/snapshot.json";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const RARE_THRESHOLD = 2;
+
+// Shape shared by both the live-DB query and the bundled snapshot, so the
+// enrichment/filtering below is identical regardless of source.
+interface Row {
+  id: string;
+  startsAt: Date;
+  movieId: string;
+  format: string | null;
+  ticketUrl: string;
+  movie: { id: string; title: string; slug: string; isClassic: boolean; isSpecialEvent: boolean };
+  theatre: { slug: string; name: string };
+}
+
+interface LoadParams {
+  start: Date;
+  end: Date;
+  theatreSlugs: string[];
+  q: string;
+}
+
+// When DATABASE_URL is set we read from the live DB; otherwise we serve the
+// snapshot bundled at build time. This is what lets the app deploy to Vercel
+// before any database is provisioned — set DATABASE_URL later to go live.
+async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug: string; name: string }[] }> {
+  if (process.env.DATABASE_URL) {
+    // Postgres `contains` is case-sensitive and needs an explicit mode that
+    // SQLite rejects, so only set it on Postgres.
+    const isPg = /^postgres(ql)?:\/\//.test(process.env.DATABASE_URL);
+    const titleFilter = isPg ? { contains: p.q, mode: "insensitive" as const } : { contains: p.q };
+    const rows = await prisma.showtime.findMany({
+      where: {
+        startsAt: { gte: p.start, lt: p.end },
+        theatre: { active: true, ...(p.theatreSlugs.length ? { slug: { in: p.theatreSlugs } } : {}) },
+        ...(p.q ? { movie: { title: titleFilter } } : {}),
+      },
+      include: { movie: true, theatre: true },
+      orderBy: { startsAt: "asc" },
+    });
+    const theatres = await prisma.theatre.findMany({
+      where: { active: true },
+      select: { slug: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    return { rows, theatres };
+  }
+
+  const ql = p.q.toLowerCase();
+  const rows: Row[] = snapshot.showtimes
+    .map((s) => ({ ...s, startsAt: new Date(s.startsAt) }))
+    .filter((s) => s.startsAt >= p.start && s.startsAt < p.end)
+    .filter((s) => s.theatre.active && (!p.theatreSlugs.length || p.theatreSlugs.includes(s.theatre.slug)))
+    .filter((s) => !ql || s.movie.title.toLowerCase().includes(ql))
+    .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+    .map((s) => ({
+      id: s.id,
+      startsAt: s.startsAt,
+      movieId: s.movieId,
+      format: s.format,
+      ticketUrl: s.ticketUrl,
+      movie: s.movie,
+      theatre: { slug: s.theatre.slug, name: s.theatre.name },
+    }));
+  const theatres = snapshot.theatres
+    .filter((t) => t.active)
+    .map((t) => ({ slug: t.slug, name: t.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { rows, theatres };
+}
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
@@ -21,19 +90,11 @@ export async function GET(req: NextRequest) {
   const q = (sp.get("q") ?? "").trim();
   const category = (sp.get("category") ?? "all").toLowerCase();
 
-  // SQLite's `contains` is already case-insensitive; Postgres needs an explicit
-  // mode, which SQLite rejects — so only set it when running on Postgres.
-  const isPg = /^postgres(ql)?:\/\//.test(process.env.DATABASE_URL ?? "");
-  const titleFilter = isPg ? { contains: q, mode: "insensitive" as const } : { contains: q };
-
-  const rows = await prisma.showtime.findMany({
-    where: {
-      startsAt: { gte: start.toJSDate(), lt: end.toJSDate() },
-      theatre: { active: true, ...(theatreSlugs.length ? { slug: { in: theatreSlugs } } : {}) },
-      ...(q ? { movie: { title: titleFilter } } : {}),
-    },
-    include: { movie: true, theatre: true },
-    orderBy: { startsAt: "asc" },
+  const { rows, theatres } = await loadData({
+    start: start.toJSDate(),
+    end: end.toJSDate(),
+    theatreSlugs,
+    q,
   });
 
   // rareness: count showtimes per movie within the visible window
@@ -67,12 +128,6 @@ export async function GET(req: NextRequest) {
     if (category === "special") return r.movie.isSpecialEvent;
     if (category === "gems") return r.isGem;
     return true;
-  });
-
-  const theatres = await prisma.theatre.findMany({
-    where: { active: true },
-    select: { slug: true, name: true },
-    orderBy: { name: "asc" },
   });
 
   const dayKeys: string[] = [];

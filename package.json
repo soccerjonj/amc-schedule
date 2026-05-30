@@ -8,6 +8,7 @@
     "vercel-build": "PRISMA_DB_PROVIDER=postgresql node scripts/db-provider.mjs && prisma generate && PRISMA_DB_PROVIDER=postgresql next build",
     "start": "next start",
     "scrape": "tsx scripts/scrape.ts",
+    "snapshot": "tsx scripts/snapshot.ts",
     "db:provider": "node scripts/db-provider.mjs",
     "db:push": "prisma db push",
     "db:studio": "prisma studio"

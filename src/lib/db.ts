@@ -19,6 +19,20 @@ function createClient() {
   return new PrismaClient({ adapter: new PrismaBetterSqlite3({ url }) });
 }
 
-export const prisma = globalForPrisma.prisma ?? createClient();
+function getClient(): PrismaClient {
+  const existing = globalForPrisma.prisma ?? createClient();
+  if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = existing;
+  return existing;
+}
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+// Lazy: instantiating the client (and loading its native driver) is deferred to
+// first use. In snapshot mode (no DATABASE_URL) the API never touches `prisma`,
+// so the SQLite/Postgres native adapter is never required — which is what lets
+// the app deploy to Vercel with no database configured.
+export const prisma = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    const client = getClient();
+    const value = (client as unknown as Record<string | symbol, unknown>)[prop];
+    return typeof value === "function" ? value.bind(client) : value;
+  },
+});
