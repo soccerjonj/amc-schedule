@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DateTime } from "luxon";
 import { prisma } from "@/lib/db";
+import { isHiddenTitle } from "@/lib/classify";
 import { THEATRE_TIMEZONE } from "@/lib/theatres";
 import snapshot from "@/data/snapshot.json";
 
@@ -99,12 +100,16 @@ export async function GET(req: NextRequest) {
   const q = (sp.get("q") ?? "").trim();
   const category = (sp.get("category") ?? "all").toLowerCase();
 
-  const { rows, theatres } = await loadData({
+  const loaded = await loadData({
     start: start.toJSDate(),
     end: end.toJSDate(),
     theatreSlugs,
     q,
   });
+  const theatres = loaded.theatres;
+  // Drop non-public listings (e.g. private theatre rentals) before anything else,
+  // so they're excluded from rareness counts and never rendered.
+  const rows = loaded.rows.filter((r) => !isHiddenTitle(r.movie.title));
 
   // rareness: count showtimes per movie within the visible window
   const counts = new Map<string, number>();

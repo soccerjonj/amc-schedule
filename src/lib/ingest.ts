@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import { prisma } from "./db";
-import { classify } from "./classify";
+import { classify, isHiddenTitle } from "./classify";
 import { enrichMovies } from "./enrich";
 import { getProvider } from "./providers";
 import { SEED_THEATRES, THEATRE_TIMEZONE } from "./theatres";
@@ -117,7 +117,10 @@ export async function ingest(opts: IngestOptions = {}) {
   return stats;
 }
 
-async function persistDay(theatre: TheatreRef, date: string, shows: RawShowtime[]) {
+async function persistDay(theatre: TheatreRef, date: string, rawShows: RawShowtime[]) {
+  // Drop non-public listings (e.g. private theatre rentals) so they never enter the DB.
+  const shows = rawShows.filter((s) => !isHiddenTitle(s.movieTitle));
+
   // group by movie and upsert movies first (FK target)
   const byMovie = new Map<string, RawShowtime[]>();
   for (const s of shows) {

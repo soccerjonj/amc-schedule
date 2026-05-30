@@ -48,3 +48,11 @@ export function classify(signals: { title?: string; attributes: string[] }): Cla
     isClassic: matchesAny(blob, CLASSIC_KEYWORDS),
   };
 }
+
+// Titles that aren't public screenings and should never appear on the site
+// (e.g. AMC private theatre rentals — a booking, not a showtime anyone can attend).
+const HIDDEN_TITLE = /\bprivate\s+theat(re|er)\s+rental\b/i;
+
+export function isHiddenTitle(title: string): boolean {
+  return HIDDEN_TITLE.test(title);
+}
