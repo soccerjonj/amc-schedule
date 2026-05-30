@@ -19,6 +19,9 @@ interface ApiShowtime {
     isClassic: boolean;
     isSpecialEvent: boolean;
     isRare: boolean;
+    posterUrl: string | null;
+    letterboxdRating: number | null;
+    letterboxdUrl: string | null;
   };
   theatre: { slug: string; name: string };
   isGem: boolean;
@@ -250,6 +253,8 @@ function DayColumn({ day, groups }: { day: string; groups: MovieGroup[] }) {
 
 function MovieCard({ group }: { group: MovieGroup }) {
   const { movie } = group;
+  const hasMeta =
+    movie.isClassic || movie.isSpecialEvent || movie.isRare || movie.letterboxdRating != null;
   return (
     <div
       className={`rounded-md border p-2 ${
@@ -258,15 +263,33 @@ function MovieCard({ group }: { group: MovieGroup }) {
           : "border-neutral-200 dark:border-neutral-800"
       }`}
     >
-      <div className="mb-1 text-sm font-semibold leading-tight">{movie.title}</div>
-      {(movie.isClassic || movie.isSpecialEvent || movie.isRare) && (
-        <div className="mb-1.5 flex flex-wrap gap-1">
-          {movie.isClassic && <Badge color="purple">Classic</Badge>}
-          {movie.isSpecialEvent && <Badge color="rose">Special</Badge>}
-          {movie.isRare && <Badge color="amber">Rare</Badge>}
+      <div className="flex gap-2">
+        {movie.posterUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={movie.posterUrl}
+            alt=""
+            loading="lazy"
+            className="h-[4.5rem] w-12 flex-none rounded bg-neutral-200 object-cover dark:bg-neutral-800"
+          />
+        ) : (
+          <div className="flex h-[4.5rem] w-12 flex-none items-center justify-center rounded bg-neutral-100 text-center text-[9px] leading-tight text-neutral-400 dark:bg-neutral-800">
+            no art
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold leading-tight">{movie.title}</div>
+          {hasMeta && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              {movie.isClassic && <Badge color="purple">Classic</Badge>}
+              {movie.isSpecialEvent && <Badge color="rose">Special</Badge>}
+              {movie.isRare && <Badge color="amber">Rare</Badge>}
+              {movie.letterboxdRating != null && <RatingBadge movie={movie} />}
+            </div>
+          )}
         </div>
-      )}
-      <div className="flex flex-wrap gap-1">
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1">
         {group.shows
           .slice()
           .sort((a, b) => (a.startsAt < b.startsAt ? -1 : 1))
@@ -284,6 +307,27 @@ function MovieCard({ group }: { group: MovieGroup }) {
           ))}
       </div>
     </div>
+  );
+}
+
+function RatingBadge({ movie }: { movie: ApiShowtime["movie"] }) {
+  const label = `★ ${movie.letterboxdRating!.toFixed(1)}`;
+  const cls =
+    "rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-green-800 dark:bg-green-900/50 dark:text-green-200";
+  return movie.letterboxdUrl ? (
+    <a
+      href={movie.letterboxdUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Letterboxd average rating"
+      className={`${cls} hover:bg-green-200 dark:hover:bg-green-900`}
+    >
+      {label}
+    </a>
+  ) : (
+    <span title="Letterboxd average rating" className={cls}>
+      {label}
+    </span>
   );
 }
 

@@ -27,6 +27,7 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       PRISMA_DB_PROVIDER: postgresql
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }} # posters; scrape still works if unset
     steps:
       - uses: actions/checkout@v5
 

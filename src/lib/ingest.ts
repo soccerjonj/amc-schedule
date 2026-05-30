@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import { prisma } from "./db";
 import { classify } from "./classify";
+import { enrichMovies } from "./enrich";
 import { getProvider } from "./providers";
 import { SEED_THEATRES, THEATRE_TIMEZONE } from "./theatres";
 import type { RawShowtime, TheatreRef } from "./providers/types";
@@ -100,6 +101,18 @@ export async function ingest(opts: IngestOptions = {}) {
     }
   } finally {
     await provider.close();
+  }
+
+  // Enrich posters/ratings after the browser is closed. Gated on a TMDB key so
+  // keyless local scrapes still succeed (metadata just stays null). Never let
+  // enrichment failures fail the scrape.
+  if (process.env.TMDB_API_KEY) {
+    try {
+      const e = await enrichMovies();
+      console.log("  enrich:", e);
+    } catch (err) {
+      console.warn("  ! enrichment failed:", (err as Error).message);
+    }
   }
   return stats;
 }

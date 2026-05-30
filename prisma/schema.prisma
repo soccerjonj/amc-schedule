@@ -33,6 +33,12 @@ model Movie {
   attributes     String     @default("[]") // JSON array of raw AMC attribute slugs
   isClassic      Boolean    @default(false)
   isSpecialEvent Boolean    @default(false)
+  // Metadata enrichment (posters from TMDB, ratings scraped from Letterboxd).
+  // Populated post-scrape by src/lib/enrich.ts; all best-effort / nullable.
+  tmdbId            Int? // resolved TMDB movie id (search once, refetch by id later)
+  letterboxdRating  Float? // aggregateRating.ratingValue, 0–5
+  letterboxdUrl     String? // film page, for the rating badge link
+  metadataCheckedAt DateTime? // last enrichment attempt (success or confident miss)
   showtimes      Showtime[]
 }
 
