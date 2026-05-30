@@ -72,8 +72,37 @@ export interface TmdbResult {
 
 interface TmdbSearchResult {
   id?: number;
+  title?: string;
   poster_path?: string | null;
   release_date?: string;
+}
+
+// TMDB search is popularity-ranked, so for a low-popularity (often unreleased)
+// title like "Toy Story 5" the first hit is frequently a poster-less stub or a
+// more-popular wrong match. Score instead: exact/near title match, then year,
+// then break ties toward a result that actually has poster art — falling back to
+// TMDB's own order.
+export function pickTmdbResult(
+  results: TmdbSearchResult[],
+  norm: NormalizedTitle,
+): TmdbSearchResult | undefined {
+  if (!results.length) return undefined;
+  const norm0 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const q = norm.query.toLowerCase();
+  const qc = norm0(norm.query);
+  const score = (r: TmdbSearchResult) => {
+    let s = 0;
+    const t = (r.title ?? "").toLowerCase();
+    if (t === q) s += 8;
+    else if (norm0(t) === qc) s += 7;
+    else if (t.startsWith(q) || q.startsWith(t)) s += 3;
+    if (norm.year && (r.release_date ?? "").slice(0, 4) === String(norm.year)) s += 4;
+    if (r.poster_path) s += 1; // tiebreak toward art
+    return s;
+  };
+  return results
+    .map((r, i) => ({ r, s: score(r), i }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)[0].r;
 }
 
 async function tmdbSearch(
@@ -103,13 +132,8 @@ export async function fetchTmdbPoster(
   try {
     const signal = opts.signal ?? AbortSignal.timeout(8000);
     const results = await tmdbSearch(norm.query, apiKey, signal);
-    if (!results.length) return { posterUrl: null, tmdbId: null };
-
-    let pick = results[0];
-    if (norm.year) {
-      const byYear = results.find((r) => (r.release_date ?? "").slice(0, 4) === String(norm.year));
-      if (byYear) pick = byYear;
-    }
+    const pick = pickTmdbResult(results, norm);
+    if (!pick) return { posterUrl: null, tmdbId: null };
     return {
       posterUrl: pick.poster_path ? `${TMDB_IMG}${pick.poster_path}` : null,
       tmdbId: typeof pick.id === "number" ? pick.id : null,
