@@ -41,7 +41,7 @@ jobs:
           npx prisma generate
 
       - name: Ensure DB schema (idempotent)
-        run: npx prisma db push --skip-generate
+        run: npx prisma db push
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
