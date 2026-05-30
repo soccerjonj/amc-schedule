@@ -1,26 +1,67 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@theme {
+  /* surfaces, deep -> elevated */
+  --color-bg: #0b0b0f;
+  --color-surface: #14141b;
+  --color-surface-2: #1c1c26;
+  --color-surface-3: #25252f;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  /* hairlines */
+  --color-line: rgba(255, 255, 255, 0.07);
+  --color-line-2: rgba(255, 255, 255, 0.12);
+
+  /* text tiers */
+  --color-ink: #f4f4f6;
+  --color-ink-2: #a8a8b4;
+  --color-ink-3: #6f6f7c;
+
+  /* accents */
+  --color-accent: #e0b15e; /* warm gold: brand + actions */
+  --color-gem: #f5c451; /* gem glow */
+  --color-lb: #00c030; /* Letterboxd green */
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-oswald);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  background-image: radial-gradient(
+    1200px 600px at 50% -10%,
+    rgba(224, 177, 94, 0.06),
+    transparent 60%
+  );
+  background-attachment: fixed;
+}
+
+@keyframes gemPulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(245, 196, 81, 0.45),
+      0 0 20px -4px rgba(245, 196, 81, 0.35);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(245, 196, 81, 0.65),
+      0 0 28px -2px rgba(245, 196, 81, 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
