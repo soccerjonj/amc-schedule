@@ -397,9 +397,9 @@ const MovieCard = memo(function MovieCard({
 }) {
   const { movie } = group;
   const [expanded, setExpanded] = useState(false);
-  const theatreGroups = useMemo(() => groupByTheatre(group.shows), [group.shows]);
+  const groups = useMemo(() => groupShowtimes(group.shows), [group.shows]);
   const total = group.shows.length;
-  const showGroups = expanded || total <= CHIP_LIMIT ? theatreGroups : trimGroups(theatreGroups, CHIP_LIMIT);
+  const showGroups = expanded || total <= CHIP_LIMIT ? groups : trimGroups(groups, CHIP_LIMIT);
   const hidden = total - countShows(showGroups);
 
   return (
@@ -448,21 +448,22 @@ const MovieCard = memo(function MovieCard({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          {showGroups.map(({ theatre, shows }) => (
-            <span key={theatre.slug} className="inline-flex flex-wrap items-center gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.04em] text-ink-3 [overflow-wrap:anywhere]">
-                {theatreLabel(theatre.slug, theatre.name)}
+        <div className="flex flex-col gap-1">
+          {showGroups.map((g) => (
+            <div key={g.key} className="flex flex-wrap items-center gap-1">
+              <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-[0.03em] text-ink-3">
+                {theatreLabel(g.theatre.slug, g.theatre.name)}
+                {g.tag && <span className="text-accent"> {g.tag}</span>}
               </span>
-              {shows.map((s) => (
+              {g.shows.map((s) => (
                 <TimeChip key={s.id} s={s} movieTitle={movie.title} dayLabel={dayLabel} />
               ))}
-            </span>
+            </div>
           ))}
           {hidden > 0 && (
             <button
               onClick={() => setExpanded(true)}
-              className="rounded-md px-1.5 py-1 text-[11px] font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              className="self-start rounded-md py-0.5 text-[11px] font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
               +{hidden} more
             </button>
@@ -484,14 +485,9 @@ function TimeChip({ s, movieTitle, dayLabel }: { s: ApiShowtime; movieTitle: str
       target="_blank"
       rel="noopener noreferrer"
       aria-label={label}
-      className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-3 px-1.5 py-1 text-[11px] font-medium text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="inline-flex items-center rounded border border-line bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
-      <span>{s.time}</span>
-      {tag && (
-        <span className="rounded-sm bg-accent/15 px-1 text-[9px] font-bold uppercase tracking-wide text-accent">
-          {tag}
-        </span>
-      )}
+      {compactTime(s.time)}
     </a>
   );
 }
@@ -548,17 +544,23 @@ function FilmIcon({ className }: { className?: string }) {
   );
 }
 
-interface TheatreGroup {
+interface ShowGroup {
+  key: string;
   theatre: { slug: string; name: string };
+  tag: string | null; // shared format tag, shown once in the label
   shows: ApiShowtime[];
 }
 
-function groupByTheatre(shows: ApiShowtime[]): TheatreGroup[] {
-  const map = new Map<string, TheatreGroup>();
+// Group a movie's showtimes by theatre + format so the format label appears once
+// and each time renders as a tiny bare pill (several fit per row).
+function groupShowtimes(shows: ApiShowtime[]): ShowGroup[] {
+  const map = new Map<string, ShowGroup>();
   for (const s of shows) {
-    const g = map.get(s.theatre.slug) ?? { theatre: s.theatre, shows: [] };
+    const tag = formatTag(s.format);
+    const key = `${s.theatre.slug}|${tag ?? ""}`;
+    const g = map.get(key) ?? { key, theatre: s.theatre, tag, shows: [] };
     g.shows.push(s);
-    map.set(s.theatre.slug, g);
+    map.set(key, g);
   }
   const groups = [...map.values()];
   for (const g of groups) g.shows.sort((a, b) => (a.startsAt < b.startsAt ? -1 : 1));
@@ -566,20 +568,29 @@ function groupByTheatre(shows: ApiShowtime[]): TheatreGroup[] {
   return groups;
 }
 
-function trimGroups(groups: TheatreGroup[], limit: number): TheatreGroup[] {
-  const out: TheatreGroup[] = [];
+function trimGroups(groups: ShowGroup[], limit: number): ShowGroup[] {
+  const out: ShowGroup[] = [];
   let n = 0;
   for (const g of groups) {
     if (n >= limit) break;
     const take = g.shows.slice(0, limit - n);
-    out.push({ theatre: g.theatre, shows: take });
+    out.push({ ...g, shows: take });
     n += take.length;
   }
   return out;
 }
 
-function countShows(groups: TheatreGroup[]): number {
+function countShows(groups: ShowGroup[]): number {
   return groups.reduce((n, g) => n + g.shows.length, 0);
+}
+
+// "7:00 PM" -> "7p", "7:30 PM" -> "7:30p", "11:30 AM" -> "11:30a".
+function compactTime(t: string): string {
+  const m = t.match(/^(\d{1,2}):(\d{2})\s*([AP])M$/i);
+  if (!m) return t;
+  const [, h, min, ap] = m;
+  const suffix = ap.toLowerCase();
+  return min === "00" ? `${h}${suffix}` : `${h}:${min}${suffix}`;
 }
 
 function theatreLabel(slug: string, fallback: string): string {
