@@ -1,0 +1,50 @@
+name: Scrape AMC showtimes
+
+# Playwright can't run on Vercel's serverless functions, so ingestion lives here:
+# a scheduled runner scrapes AMC and writes to the shared Neon Postgres that the
+# Vercel app reads from. Set the DATABASE_URL repo secret to the Neon connection
+# string (postgresql://...). Trigger manually from the Actions tab via run-workflow.
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours (UTC)
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days ahead to scrape"
+        required: false
+        default: "14"
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PRISMA_DB_PROVIDER: postgresql
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Point Prisma at Postgres and generate client
+        run: |
+          node scripts/db-provider.mjs
+          npx prisma generate
+
+      - name: Ensure DB schema (idempotent)
+        run: npx prisma db push --skip-generate
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Scrape
+        run: npm run scrape -- --days "${{ github.event.inputs.days || '14' }}"

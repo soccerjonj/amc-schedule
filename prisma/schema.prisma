@@ -1,0 +1,74 @@
+// AMC Showtimes Calendar — data model.
+// Local dev uses SQLite (zero external accounts). For production, switch the
+// datasource provider to "postgresql" and point DATABASE_URL at a managed DB.
+// `attributes` is stored as a JSON string so the schema stays portable across
+// SQLite and Postgres.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Theatre {
+  id        String     @id // AMC numeric theatre id
+  slug      String     @unique // URL slug, e.g. "amc-river-east-21"
+  urlPath   String // full path under /movie-theatres, e.g. "chicago/amc-river-east-21"
+  name      String
+  city      String?
+  active    Boolean    @default(true)
+  showtimes Showtime[]
+}
+
+model Movie {
+  id             String     @id // AMC numeric movie id
+  slug           String     @unique // e.g. "backrooms-83009"
+  title          String
+  rating         String?
+  runtimeMinutes Int?
+  posterUrl      String?
+  attributes     String     @default("[]") // JSON array of raw AMC attribute slugs
+  isClassic      Boolean    @default(false)
+  isSpecialEvent Boolean    @default(false)
+  showtimes      Showtime[]
+}
+
+model Showtime {
+  id              String   @id // AMC numeric showtime id
+  theatre         Theatre  @relation(fields: [theatreId], references: [id])
+  theatreId       String
+  movie           Movie    @relation(fields: [movieId], references: [id])
+  movieId         String
+  startsAt        DateTime // absolute instant (stored UTC; sourced as America/Chicago)
+  format          String? // e.g. "Dolby Cinema at AMC Prime", "Laser at AMC"
+  ticketUrl       String
+  sourceUpdatedAt DateTime @updatedAt
+
+  @@index([startsAt])
+  @@index([theatreId, startsAt])
+  @@index([movieId])
+}
+
+// --- Stubbed for a future email-alerts feature (not built in v1) ---
+
+model User {
+  id        String      @id @default(cuid())
+  email     String      @unique
+  createdAt DateTime    @default(now())
+  alerts    AlertRule[]
+}
+
+model AlertRule {
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      String
+  // Match criteria (any combination); null means "any".
+  theatreId   String?
+  movieId     String?
+  onlyClassic Boolean  @default(false)
+  onlySpecial Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
