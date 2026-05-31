@@ -540,10 +540,7 @@ const MovieCard = memo(function MovieCard({
 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-start gap-1.5">
-          <h3
-            title={movie.title}
-            className="line-clamp-2 min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink"
-          >
+          <h3 className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink">
             {movie.title}
           </h3>
           {movie.letterboxdRating != null && <RatingBadge movie={movie} />}
