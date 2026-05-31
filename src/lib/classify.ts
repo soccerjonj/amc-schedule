@@ -21,7 +21,6 @@ const SPECIAL_EVENT_KEYWORDS = [
   "sing-along",
   "sing along",
   "double feature",
-  "anniversary",
 ];
 
 const CLASSIC_KEYWORDS = [
@@ -29,7 +28,19 @@ const CLASSIC_KEYWORDS = [
   "flashback",
   "repertory",
   "throwback cinema",
+  "fan fave",
+  "anniversary", // anniversary screenings are old-film re-releases, not "events"
 ];
+
+// AMC exposes these as showtime attribute labels (verified in the live data).
+const INDIE_ATTR = "amc artisan films";
+const FOREIGN_ATTR = "international films";
+
+// A film is "old enough" to be a repertory/Fan Faves screening rather than a
+// current release if it came out at least this many years before now. AMC's
+// Fan Faves program isn't exposed in the showtime data, so release age is the
+// reliable proxy (Call Me By Your Name 2017, Moonlight 2016, Milk 2008…).
+const REPERTORY_AGE_YEARS = 2;
 
 function matchesAny(haystack: string, keywords: string[]): boolean {
   const h = haystack.toLowerCase();
@@ -39,13 +50,24 @@ function matchesAny(haystack: string, keywords: string[]): boolean {
 export interface Classification {
   isClassic: boolean;
   isSpecialEvent: boolean;
+  isIndie: boolean;
+  isForeign: boolean;
 }
 
-export function classify(signals: { title?: string; attributes: string[] }): Classification {
+export function classify(signals: {
+  title?: string;
+  attributes: string[];
+  releaseYear?: number | null;
+}): Classification {
   const blob = [signals.title ?? "", ...signals.attributes].join(" | ");
+  const nowYear = new Date().getFullYear();
+  const oldFilm =
+    signals.releaseYear != null && signals.releaseYear <= nowYear - REPERTORY_AGE_YEARS;
   return {
+    isClassic: oldFilm || matchesAny(blob, CLASSIC_KEYWORDS),
     isSpecialEvent: matchesAny(blob, SPECIAL_EVENT_KEYWORDS),
-    isClassic: matchesAny(blob, CLASSIC_KEYWORDS),
+    isIndie: matchesAny(blob, [INDIE_ATTR]),
+    isForeign: matchesAny(blob, [FOREIGN_ATTR]),
   };
 }
 

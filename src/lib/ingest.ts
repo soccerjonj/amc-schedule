@@ -40,7 +40,19 @@ async function upsertMovieFromShowtimes(movieId: string, shows: RawShowtime[]) {
   // (e.g. "Fan First Premiere") produce false positives. Recomputed fresh each
   // run so flags stay accurate as listings change.
   const first = shows[0];
-  const cls = classify({ title: first.movieTitle, attributes });
+  // Pass the previously-enriched release year so the "old film => Classic/Fan Fave"
+  // heuristic survives re-scrapes (enrichment sets releaseYear; it persists here).
+  const cls = classify({
+    title: first.movieTitle,
+    attributes,
+    releaseYear: existing?.releaseYear ?? null,
+  });
+  const flags = {
+    isClassic: cls.isClassic,
+    isSpecialEvent: cls.isSpecialEvent,
+    isIndie: cls.isIndie,
+    isForeign: cls.isForeign,
+  };
   await prisma.movie.upsert({
     where: { id: movieId },
     create: {
@@ -48,15 +60,13 @@ async function upsertMovieFromShowtimes(movieId: string, shows: RawShowtime[]) {
       slug: first.movieSlug,
       title: first.movieTitle,
       attributes: JSON.stringify(attributes),
-      isClassic: cls.isClassic,
-      isSpecialEvent: cls.isSpecialEvent,
+      ...flags,
     },
     update: {
       slug: first.movieSlug,
       title: first.movieTitle,
       attributes: JSON.stringify(attributes),
-      isClassic: cls.isClassic,
-      isSpecialEvent: cls.isSpecialEvent,
+      ...flags,
     },
   });
 }

@@ -24,6 +24,8 @@ interface Row {
     slug: string;
     isClassic: boolean;
     isSpecialEvent: boolean;
+    isIndie: boolean;
+    isForeign: boolean;
     posterUrl: string | null;
     letterboxdRating: number | null;
     letterboxdUrl: string | null;
@@ -130,13 +132,16 @@ export async function GET(req: NextRequest) {
         slug: r.movie.slug,
         isClassic: r.movie.isClassic,
         isSpecialEvent: r.movie.isSpecialEvent,
+        isIndie: r.movie.isIndie,
+        isForeign: r.movie.isForeign,
         isRare,
         posterUrl: r.movie.posterUrl,
         letterboxdRating: r.movie.letterboxdRating,
         letterboxdUrl: r.movie.letterboxdUrl,
       },
       theatre: { slug: r.theatre.slug, name: r.theatre.name },
-      isGem: r.movie.isClassic || r.movie.isSpecialEvent || isRare,
+      isGem:
+        r.movie.isClassic || r.movie.isSpecialEvent || r.movie.isIndie || r.movie.isForeign || isRare,
     };
   });
 

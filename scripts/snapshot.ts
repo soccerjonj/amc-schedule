@@ -29,6 +29,8 @@ async function main() {
         slug: s.movie.slug,
         isClassic: s.movie.isClassic,
         isSpecialEvent: s.movie.isSpecialEvent,
+        isIndie: s.movie.isIndie,
+        isForeign: s.movie.isForeign,
         posterUrl: s.movie.posterUrl,
         letterboxdRating: s.movie.letterboxdRating,
         letterboxdUrl: s.movie.letterboxdUrl,

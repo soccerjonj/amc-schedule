@@ -12,6 +12,8 @@ interface Movie {
   slug: string;
   isClassic: boolean;
   isSpecialEvent: boolean;
+  isIndie: boolean;
+  isForeign: boolean;
   isRare: boolean;
   posterUrl: string | null;
   letterboxdRating: number | null;
@@ -561,10 +563,16 @@ const MovieCard = memo(function MovieCard({
           </button>
         </div>
 
-        {(movie.isClassic || movie.isSpecialEvent || movie.isRare) && (
+        {(movie.isClassic ||
+          movie.isSpecialEvent ||
+          movie.isIndie ||
+          movie.isForeign ||
+          movie.isRare) && (
           <div className="flex flex-wrap gap-1">
             {movie.isClassic && <Badge tone="classic">Classic</Badge>}
             {movie.isSpecialEvent && <Badge tone="special">Special</Badge>}
+            {movie.isIndie && <Badge tone="indie">Indie</Badge>}
+            {movie.isForeign && <Badge tone="foreign">Foreign</Badge>}
             {movie.isRare && <Badge tone="rare">Rare</Badge>}
           </div>
         )}
@@ -634,10 +642,18 @@ function RatingBadge({ movie }: { movie: Movie }) {
   );
 }
 
-function Badge({ tone, children }: { tone: "classic" | "special" | "rare"; children: React.ReactNode }) {
+function Badge({
+  tone,
+  children,
+}: {
+  tone: "classic" | "special" | "indie" | "foreign" | "rare";
+  children: React.ReactNode;
+}) {
   const map = {
     classic: "bg-classic/15 text-classic ring-classic/25",
     special: "bg-special/15 text-special ring-special/25",
+    indie: "bg-emerald-500/15 text-emerald-300 ring-emerald-400/25",
+    foreign: "bg-orange-500/15 text-orange-300 ring-orange-400/25",
     rare: "bg-rare/15 text-rare ring-rare/25",
   };
   return (

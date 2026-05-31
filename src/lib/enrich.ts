@@ -6,6 +6,16 @@
 // 20th Anniversary"), so normalizeTitle cleans them before matching, and we
 // prefer a blank over a wrong match.
 import { prisma } from "./db";
+import { classify } from "./classify";
+
+function parseAttrs(json: string): string[] {
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMG = "https://image.tmdb.org/t/p/w342";
@@ -346,6 +356,11 @@ export async function enrichMovies(
       if (lb?.rating != null) stats.lbHits++;
       if (!tmdb.posterUrl && lb?.rating == null) stats.misses++;
 
+      // Re-run classification now that we know the release year, so the
+      // old-film => Classic/Fan Fave heuristic takes effect immediately.
+      const year = tmdb.year ?? m.releaseYear ?? null;
+      const cls = classify({ title: m.title, attributes: parseAttrs(m.attributes), releaseYear: year });
+
       await prisma.movie.update({
         where: { id: m.id },
         data: {
@@ -356,6 +371,11 @@ export async function enrichMovies(
           // when null — that's how a wrong match (e.g. 1963 "Passenger") gets corrected.
           letterboxdRating: lb ? lb.rating : m.letterboxdRating,
           letterboxdUrl: lb ? lb.url : m.letterboxdUrl,
+          releaseYear: year,
+          isClassic: cls.isClassic,
+          isSpecialEvent: cls.isSpecialEvent,
+          isIndie: cls.isIndie,
+          isForeign: cls.isForeign,
           metadataCheckedAt: new Date(),
         },
       });
