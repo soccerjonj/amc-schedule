@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DateTime } from "luxon";
 
@@ -57,10 +57,21 @@ const THEATRE_LABEL: Record<string, string> = {
   "amc-roosevelt-collection-16": "Roosevelt",
 };
 
-const CHIP_LIMIT = 14; // collapse very long showtime lists behind a "+N" toggle
+const CHIP_LIMIT = 7; // collapse long showtime lists behind a "+N" toggle
+const HIDDEN_KEY = "amc:hidden";
 
 function todayISO() {
   return DateTime.now().setZone(TZ).startOf("day").toISODate()!;
+}
+
+function loadHidden(): Map<string, string> {
+  if (typeof window === "undefined") return new Map();
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(HIDDEN_KEY) ?? "[]");
+    return new Map(Array.isArray(raw) ? (raw as [string, string][]) : []);
+  } catch {
+    return new Map();
+  }
 }
 
 export default function Page() {
@@ -88,7 +99,34 @@ function Calendar() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [hidden, setHidden] = useState<Map<string, string>>(() => new Map());
+  const [showHidden, setShowHidden] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
+
+  // Load the dismissed-movie list once on the client (avoids SSR hydration mismatch).
+  useEffect(() => setHidden(loadHidden()), []);
+
+  const hideMovie = useCallback((id: string, title: string) => {
+    setHidden((prev) => {
+      const next = new Map(prev).set(id, title);
+      window.localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next.entries()]));
+      return next;
+    });
+  }, []);
+
+  const restoreMovie = useCallback((id: string) => {
+    setHidden((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      window.localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next.entries()]));
+      return next;
+    });
+  }, []);
+
+  function clearHidden() {
+    setHidden(new Map());
+    window.localStorage.removeItem(HIDDEN_KEY);
+  }
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query), 300);
@@ -140,11 +178,15 @@ function Calendar() {
     return () => ro.disconnect();
   }, []);
 
-  const byDay = useMemo(() => groupByDay(data?.showtimes ?? []), [data]);
+  const visibleShowtimes = useMemo(
+    () => (data?.showtimes ?? []).filter((s) => !hidden.has(s.movie.id)),
+    [data, hidden],
+  );
+  const byDay = useMemo(() => groupByDay(visibleShowtimes), [visibleShowtimes]);
   const theatres = data?.theatres ?? [];
   const movieCount = useMemo(
-    () => new Set((data?.showtimes ?? []).map((s) => s.movie.id)).size,
-    [data],
+    () => new Set(visibleShowtimes.map((s) => s.movie.id)).size,
+    [visibleShowtimes],
   );
 
   function toggleTheatre(slug: string) {
@@ -177,16 +219,27 @@ function Calendar() {
               <span className="ml-1 text-sm font-medium text-ink-2">{formatRange(weekStart)}</span>
             </div>
 
-            <div className="ml-auto flex items-center gap-3" aria-live="polite">
-              {loading ? (
-                <span className="text-xs text-ink-3">updating…</span>
-              ) : error ? (
-                <span className="text-xs text-rose-300">failed to load</span>
-              ) : data ? (
-                <span className="text-xs text-ink-3">
-                  {movieCount} {movieCount === 1 ? "movie" : "movies"} · {data.total} showtimes
-                </span>
-              ) : null}
+            <div className="ml-auto flex items-center gap-2.5">
+              <span className="text-xs text-ink-3" aria-live="polite">
+                {loading ? (
+                  "updating…"
+                ) : error ? (
+                  <span className="text-rose-300">failed to load</span>
+                ) : data ? (
+                  `${movieCount} ${movieCount === 1 ? "movie" : "movies"} · ${visibleShowtimes.length} showtimes`
+                ) : (
+                  ""
+                )}
+              </span>
+              {hidden.size > 0 && (
+                <button
+                  onClick={() => setShowHidden((v) => !v)}
+                  aria-expanded={showHidden}
+                  className="rounded-full border border-line px-2.5 py-1 text-xs font-medium text-ink-2 transition hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  {hidden.size} hidden
+                </button>
+              )}
               <DensityToggle value={density} onChange={setDensity} />
             </div>
           </div>
@@ -248,6 +301,55 @@ function Calendar() {
               className="ml-auto w-40 rounded-full border border-line bg-surface px-3 py-1 text-sm text-ink outline-none transition placeholder:text-ink-3 focus-visible:border-accent focus-visible:ring-1 focus-visible:ring-accent sm:w-56"
             />
           </div>
+
+          {showHidden && hidden.size > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">
+                Hidden
+              </span>
+              {[...hidden.entries()].map(([id, title]) => (
+                <button
+                  key={id}
+                  onClick={() => restoreMovie(id)}
+                  title={`Restore ${title}`}
+                  className="inline-flex items-center gap-1 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-xs text-ink-2 transition hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  <span className="max-w-[12rem] truncate">{title}</span>
+                  <span aria-hidden="true" className="text-ink-3">＋</span>
+                </button>
+              ))}
+              <button
+                onClick={clearHidden}
+                className="ml-1 text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Restore all
+              </button>
+            </div>
+          )}
+
+          {data && data.dayKeys.length > 0 && (
+            <nav aria-label="Jump to day" className="flex gap-1 overflow-x-auto">
+              {data.dayKeys.map((day) => {
+                const dt = DateTime.fromISO(day, { zone: TZ });
+                const isToday = day === todayISO();
+                return (
+                  <button
+                    key={day}
+                    onClick={() =>
+                      document.getElementById(`day-${day}`)?.scrollIntoView({ behavior: "smooth", block: "start" })
+                    }
+                    className={`flex-none rounded-full px-2.5 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                      isToday
+                        ? "bg-accent/15 text-accent ring-1 ring-accent/30"
+                        : "border border-line text-ink-2 hover:bg-surface-2 hover:text-ink"
+                    }`}
+                  >
+                    {dt.toFormat("ccc d")}
+                  </button>
+                );
+              })}
+            </nav>
+          )}
         </div>
       </header>
 
@@ -265,7 +367,7 @@ function Calendar() {
         ) : (
           <div role="list" className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
             {(data?.dayKeys ?? []).map((day) => (
-              <DayColumn key={day} day={day} groups={byDay[day] ?? []} density={density} />
+              <DayColumn key={day} day={day} groups={byDay[day] ?? []} density={density} onHide={hideMovie} />
             ))}
           </div>
         )}
@@ -343,19 +445,22 @@ const DayColumn = memo(function DayColumn({
   day,
   groups,
   density,
+  onHide,
 }: {
   day: string;
   groups: MovieGroup[];
   density: Density;
+  onHide: (id: string, title: string) => void;
 }) {
   const dt = DateTime.fromISO(day, { zone: TZ });
   const isToday = day === todayISO();
   const dayLabel = dt.toFormat("ccc, LLL d");
   return (
     <section
+      id={`day-${day}`}
       role="listitem"
       aria-label={dt.toFormat("cccc, LLLL d")}
-      className={`flex flex-col rounded-xl border bg-surface ${
+      className={`flex scroll-mt-[calc(var(--bar-h)+0.5rem)] flex-col rounded-xl border bg-surface ${
         isToday ? "border-accent/40 ring-1 ring-accent/20" : "border-line"
       }`}
     >
@@ -379,7 +484,9 @@ const DayColumn = memo(function DayColumn({
         {groups.length === 0 ? (
           <p className="py-6 text-center text-xs text-ink-3">No showtimes</p>
         ) : (
-          groups.map((g) => <MovieCard key={g.movie.id} group={g} density={density} dayLabel={dayLabel} />)
+          groups.map((g) => (
+            <MovieCard key={g.movie.id} group={g} density={density} dayLabel={dayLabel} onHide={onHide} />
+          ))
         )}
       </div>
     </section>
@@ -390,10 +497,12 @@ const MovieCard = memo(function MovieCard({
   group,
   density,
   dayLabel,
+  onHide,
 }: {
   group: MovieGroup;
   density: Density;
   dayLabel: string;
+  onHide: (id: string, title: string) => void;
 }) {
   const { movie } = group;
   const [expanded, setExpanded] = useState(false);
@@ -411,7 +520,7 @@ const MovieCard = memo(function MovieCard({
       }`}
     >
       {density !== "list" && (
-        <div className="relative aspect-[2/3] w-12 flex-none self-start overflow-hidden rounded bg-surface-3">
+        <div className="relative aspect-[2/3] w-10 flex-none self-start overflow-hidden rounded bg-surface-3">
           {movie.posterUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -438,6 +547,16 @@ const MovieCard = memo(function MovieCard({
             {movie.title}
           </h3>
           {movie.letterboxdRating != null && <RatingBadge movie={movie} />}
+          <button
+            onClick={() => onHide(movie.id, movie.title)}
+            aria-label={`Hide ${movie.title} from all days`}
+            title="Hide this movie"
+            className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-60 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
         </div>
 
         {(movie.isClassic || movie.isSpecialEvent || movie.isRare) && (
