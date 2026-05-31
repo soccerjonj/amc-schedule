@@ -550,7 +550,7 @@ const MovieCard = memo(function MovieCard({
           <h3 className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink">
             {title}
           </h3>
-          {movie.letterboxdRating != null && <RatingBadge movie={movie} />}
+          {(movie.letterboxdRating != null || movie.letterboxdUrl) && <RatingBadge movie={movie} />}
           <button
             onClick={() => onHide(movie.id, title)}
             aria-label={`Hide ${title} from all days`}
@@ -621,23 +621,40 @@ function TimeChip({ s, movieTitle, dayLabel }: { s: ApiShowtime; movieTitle: str
   );
 }
 
+function LetterboxdMark() {
+  // The Letterboxd three-dot mark (orange / green / blue) — shown when a film has
+  // a page but no average rating yet (e.g. unreleased).
+  return (
+    <svg viewBox="0 0 26 10" className="h-2.5 w-auto" aria-hidden="true">
+      <circle cx="5" cy="5" r="4.6" fill="#ff8000" />
+      <circle cx="13" cy="5" r="4.6" fill="#00e054" />
+      <circle cx="21" cy="5" r="4.6" fill="#40bcf4" />
+    </svg>
+  );
+}
+
 function RatingBadge({ movie }: { movie: Movie }) {
-  const label = `★ ${movie.letterboxdRating!.toFixed(1)}`;
+  const hasRating = movie.letterboxdRating != null;
+  if (!hasRating && !movie.letterboxdUrl) return null;
   const cls =
-    "inline-flex flex-none items-center rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] font-bold text-lb ring-1 ring-lb/30";
+    "inline-flex flex-none items-center gap-0.5 rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] font-bold text-lb ring-1 ring-lb/30";
+  const content = hasRating ? <>★ {movie.letterboxdRating!.toFixed(1)}</> : <LetterboxdMark />;
+  const aria = hasRating
+    ? `Letterboxd rating ${movie.letterboxdRating!.toFixed(1)} out of 5`
+    : "View on Letterboxd — not yet rated";
   return movie.letterboxdUrl ? (
     <a
       href={movie.letterboxdUrl}
       target="_blank"
       rel="noopener noreferrer"
-      aria-label={`Letterboxd rating ${movie.letterboxdRating!.toFixed(1)} out of 5 — opens in a new tab`}
+      aria-label={`${aria} — opens in a new tab`}
       className={`${cls} transition hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lb`}
     >
-      {label}
+      {content}
     </a>
   ) : (
-    <span aria-label={`Letterboxd rating ${movie.letterboxdRating!.toFixed(1)} out of 5`} className={cls}>
-      {label}
+    <span aria-label={aria} className={cls}>
+      {content}
     </span>
   );
 }
@@ -747,19 +764,32 @@ function displayTitle(title: string): string {
   return title;
 }
 
-// A generic soccer/World-Cup tile used in the poster slot for FIFA broadcasts,
-// which have no film poster on TMDB.
+// Poster slot for FIFA World Cup broadcasts (no film poster on TMDB). Uses the
+// bundled World Cup image cropped to its emblem (object-top, since the artwork
+// puts the emblem up top and text below); falls back to a soccer-ball tile if the
+// image isn't present.
 function WorldCupPoster() {
+  const [imgOk, setImgOk] = useState(true);
   return (
     <div
       aria-hidden="true"
-      className="flex aspect-[2/3] w-10 flex-none self-start items-center justify-center overflow-hidden rounded bg-gradient-to-br from-emerald-600 to-sky-700"
+      className="relative flex aspect-[2/3] w-10 flex-none self-start items-center justify-center overflow-hidden rounded bg-gradient-to-br from-emerald-700 to-sky-800"
     >
-      <svg viewBox="0 0 24 24" className="h-5 w-5 text-white" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <svg viewBox="0 0 24 24" className="h-5 w-5 text-white/85" fill="none" stroke="currentColor" strokeWidth="1.4">
         <circle cx="12" cy="12" r="9" />
         <path d="M12 8.2l3.4 2.5-1.3 4H9.9l-1.3-4L12 8.2z" fill="currentColor" stroke="none" />
         <path d="M12 3.2v3M20.6 11.2l-3.1.4M17.1 18.8l-1.6-2.9M8.5 18.8l1.6-2.9M3.4 11.2l3.1.4" />
       </svg>
+      {imgOk && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src="/world-cup.png"
+          alt=""
+          loading="lazy"
+          onError={() => setImgOk(false)}
+          className="absolute inset-0 h-full w-full bg-white object-cover object-top"
+        />
+      )}
     </div>
   );
 }

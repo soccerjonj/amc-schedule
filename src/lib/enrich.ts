@@ -247,30 +247,33 @@ export async function fetchLetterboxdRating(
   const bareUrl = `${LB_BASE}/film/${slug}/`;
   const bare = await fetchFilmPage(bareUrl, sig());
 
-  // The bare slug is the right film when its year matches (or we have no year to check).
+  // The bare slug is the right film when its year matches (or we have no year to
+  // check). Keep the URL even when there's no rating yet (unreleased films have a
+  // page but no aggregateRating), so users can still click through.
   if (bare.status === 200 && yearClose(bare.year)) {
-    return { rating: bare.rating, url: bare.rating != null ? bareUrl : null };
+    return { rating: bare.rating, url: bareUrl };
   }
 
   // Otherwise the bare slug is a different-year film. Try the year-suffixed slugs
-  // around the target (Letterboxd's slug year can be off by one from the US release).
-  // Take the first that's a rated year-match — don't let an unrated same-title page
-  // short-circuit the search before the rated one.
+  // around the target (Letterboxd's slug year can be off by one from the US
+  // release). Prefer a rated year-match; fall back to a year-matching page without
+  // a rating so we can still link to it.
   if (target != null) {
+    let fallbackUrl: string | null = null;
     for (const y of [target, target - 1, target + 1]) {
       const altUrl = `${LB_BASE}/film/${slug}-${y}/`;
       const alt = await fetchFilmPage(altUrl, sig());
-      if (alt.status === 200 && alt.rating != null && yearClose(alt.year)) {
-        return { rating: alt.rating, url: altUrl };
+      if (alt.status === 200 && yearClose(alt.year)) {
+        if (alt.rating != null) return { rating: alt.rating, url: altUrl };
+        fallbackUrl ??= altUrl;
       }
     }
-    // No rated right-year film found — prefer no rating over a wrong one.
-    return { rating: null, url: null };
+    return { rating: null, url: fallbackUrl };
   }
 
   // No year signal at all: fall back to the bare film if it exists.
   if (bare.status === 200) {
-    return { rating: bare.rating, url: bare.rating != null ? bareUrl : null };
+    return { rating: bare.rating, url: bareUrl };
   }
   return { rating: null, url: null };
 }
