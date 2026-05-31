@@ -13,6 +13,10 @@ on:
         description: "Days ahead to scrape"
         required: false
         default: "50"
+      force:
+        description: "Force re-enrich all movies (ignore staleness)"
+        required: false
+        default: "false"
 
 concurrency:
   group: scrape
@@ -50,6 +54,8 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Scrape
+        env:
+          ENRICH_FORCE: ${{ github.event.inputs.force }}
         run: npm run scrape -- --days "${{ github.event.inputs.days || '50' }}"
 
       # Keep the bundled fallback (served when DATABASE_URL is unset) in sync with

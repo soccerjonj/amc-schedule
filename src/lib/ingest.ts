@@ -108,8 +108,9 @@ export async function ingest(opts: IngestOptions = {}) {
   // enrichment failures fail the scrape.
   if (process.env.TMDB_API_KEY) {
     try {
-      const e = await enrichMovies();
-      console.log("  enrich:", e);
+      const force = process.env.ENRICH_FORCE === "true" || process.env.ENRICH_FORCE === "1";
+      const e = await enrichMovies({ force });
+      console.log(`  enrich${force ? " (forced)" : ""}:`, e);
     } catch (err) {
       console.warn("  ! enrichment failed:", (err as Error).message);
     }

@@ -68,6 +68,7 @@ export function normalizeTitle(raw: string): NormalizedTitle {
 export interface TmdbResult {
   posterUrl: string | null;
   tmdbId: number | null;
+  year: number | null; // release year of the matched film — used to disambiguate Letterboxd
 }
 
 interface TmdbSearchResult {
@@ -128,18 +129,20 @@ export async function fetchTmdbPoster(
   opts: { apiKey?: string; signal?: AbortSignal } = {},
 ): Promise<TmdbResult> {
   const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
-  if (!apiKey) return { posterUrl: null, tmdbId: null };
+  if (!apiKey) return { posterUrl: null, tmdbId: null, year: null };
   try {
     const signal = opts.signal ?? AbortSignal.timeout(8000);
     const results = await tmdbSearch(norm.query, apiKey, signal);
     const pick = pickTmdbResult(results, norm);
-    if (!pick) return { posterUrl: null, tmdbId: null };
+    if (!pick) return { posterUrl: null, tmdbId: null, year: null };
+    const y = pick.release_date ? parseInt(pick.release_date.slice(0, 4), 10) : NaN;
     return {
       posterUrl: pick.poster_path ? `${TMDB_IMG}${pick.poster_path}` : null,
       tmdbId: typeof pick.id === "number" ? pick.id : null,
+      year: Number.isNaN(y) ? null : y,
     };
   } catch {
-    return { posterUrl: null, tmdbId: null };
+    return { posterUrl: null, tmdbId: null, year: null };
   }
 }
 
@@ -215,41 +218,51 @@ async function fetchFilmPage(
   return { status: 200, ...parseFilmLd(html) };
 }
 
+// Resolves the correct Letterboxd film and returns its average rating. The bare
+// slug ("/film/passenger/") points at the canonical/oldest film of that title, so
+// for a new release ("Passenger" -> 1963) we use the target year (from the TMDB
+// match) to pick the year-suffixed slug Letterboxd uses to disambiguate. Network
+// errors propagate (the caller keeps any existing value); a definitive "no
+// right-year film" returns null so a wrong rating gets cleared rather than kept.
 export async function fetchLetterboxdRating(
   norm: NormalizedTitle,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; year?: number | null } = {},
 ): Promise<LetterboxdResult> {
-  try {
-    const slug = slugify(norm.query);
-    if (!slug) return { rating: null, url: null };
-    const signal = () => opts.signal ?? AbortSignal.timeout(8000);
-    const bareUrl = `${LB_BASE}/film/${slug}/`;
+  const slug = slugify(norm.query);
+  if (!slug) return { rating: null, url: null };
+  const sig = () => opts.signal ?? AbortSignal.timeout(8000);
+  const target = opts.year ?? norm.year ?? null;
+  const yearClose = (y: number | null) => target == null || y == null || Math.abs(y - target) <= 1;
 
-    const bare = await fetchFilmPage(bareUrl, signal());
-    if (bare.status === 404) {
-      // No bare film. The year-suffixed slug is the only remaining hope.
-      if (norm.year) {
-        const altUrl = `${LB_BASE}/film/${slug}-${norm.year}/`;
-        const alt = await fetchFilmPage(altUrl, signal());
-        if (alt.status === 200 && alt.rating != null) return { rating: alt.rating, url: altUrl };
-      }
-      return { rating: null, url: null };
-    }
-    if (bare.status !== 200) return { rating: null, url: null };
+  const bareUrl = `${LB_BASE}/film/${slug}/`;
+  const bare = await fetchFilmPage(bareUrl, sig());
 
-    // Same-title collision guard: if the bare slug is a *different-year* film than
-    // the one we want, prefer the -YEAR disambiguation when it exists. But the
-    // title's year is often the re-release year (e.g. "Spirited Away (2026)"), so
-    // if no -YEAR page exists we keep the bare film rather than reject it.
-    if (norm.year && bare.year && Math.abs(bare.year - norm.year) > 1) {
-      const altUrl = `${LB_BASE}/film/${slug}-${norm.year}/`;
-      const alt = await fetchFilmPage(altUrl, signal());
-      if (alt.status === 200 && alt.rating != null) return { rating: alt.rating, url: altUrl };
-    }
+  // The bare slug is the right film when its year matches (or we have no year to check).
+  if (bare.status === 200 && yearClose(bare.year)) {
     return { rating: bare.rating, url: bare.rating != null ? bareUrl : null };
-  } catch {
+  }
+
+  // Otherwise the bare slug is a different-year film. Try the year-suffixed slugs
+  // around the target (Letterboxd's slug year can be off by one from the US release).
+  // Take the first that's a rated year-match — don't let an unrated same-title page
+  // short-circuit the search before the rated one.
+  if (target != null) {
+    for (const y of [target, target - 1, target + 1]) {
+      const altUrl = `${LB_BASE}/film/${slug}-${y}/`;
+      const alt = await fetchFilmPage(altUrl, sig());
+      if (alt.status === 200 && alt.rating != null && yearClose(alt.year)) {
+        return { rating: alt.rating, url: altUrl };
+      }
+    }
+    // No rated right-year film found — prefer no rating over a wrong one.
     return { rating: null, url: null };
   }
+
+  // No year signal at all: fall back to the bare film if it exists.
+  if (bare.status === 200) {
+    return { rating: bare.rating, url: bare.rating != null ? bareUrl : null };
+  }
+  return { rating: null, url: null };
 }
 
 export interface EnrichStats {
@@ -268,34 +281,40 @@ export async function enrichMovies(
     missRetryDays?: number;
     maxMovies?: number;
     tmdbApiKey?: string;
+    force?: boolean; // re-check every movie, ignoring the staleness gate
   } = {},
 ): Promise<EnrichStats> {
   const staleAfterDays = opts.staleAfterDays ?? 7;
   const missRetryDays = opts.missRetryDays ?? 30;
-  const maxMovies = opts.maxMovies ?? 300;
+  const force = opts.force ?? false;
+  const maxMovies = opts.maxMovies ?? (force ? 2000 : 300);
   const apiKey = opts.tmdbApiKey ?? process.env.TMDB_API_KEY;
 
   const now = Date.now();
   const staleDate = new Date(now - staleAfterDays * DAY_MS);
   const missDate = new Date(now - missRetryDays * DAY_MS);
 
+  const where = force
+    ? {}
+    : {
+        OR: [
+          { metadataCheckedAt: null }, // never checked
+          {
+            // has data → refresh weekly (ratings drift slowly)
+            metadataCheckedAt: { lt: staleDate },
+            OR: [{ posterUrl: { not: null } }, { letterboxdRating: { not: null } }],
+          },
+          {
+            // confident miss → retry monthly
+            metadataCheckedAt: { lt: missDate },
+            posterUrl: null,
+            letterboxdRating: null,
+          },
+        ],
+      };
+
   const movies = await prisma.movie.findMany({
-    where: {
-      OR: [
-        { metadataCheckedAt: null }, // never checked
-        {
-          // has data → refresh weekly (ratings drift slowly)
-          metadataCheckedAt: { lt: staleDate },
-          OR: [{ posterUrl: { not: null } }, { letterboxdRating: { not: null } }],
-        },
-        {
-          // confident miss → retry monthly
-          metadataCheckedAt: { lt: missDate },
-          posterUrl: null,
-          letterboxdRating: null,
-        },
-      ],
-    },
+    where,
     orderBy: { metadataCheckedAt: { sort: "asc", nulls: "first" } },
     take: maxMovies,
   });
@@ -314,25 +333,29 @@ export async function enrichMovies(
     }
 
     try {
-      const [tmdbR, lbR] = await Promise.allSettled([
-        fetchTmdbPoster(norm, { apiKey }),
-        fetchLetterboxdRating(norm),
-      ]);
-      const tmdb = tmdbR.status === "fulfilled" ? tmdbR.value : { posterUrl: null, tmdbId: null };
-      const lb = lbR.status === "fulfilled" ? lbR.value : { rating: null, url: null };
+      // TMDB first so its matched release year can disambiguate the Letterboxd film.
+      const tmdb = await fetchTmdbPoster(norm, { apiKey });
+      let lb: LetterboxdResult | null = null;
+      try {
+        lb = await fetchLetterboxdRating(norm, { year: tmdb.year ?? norm.year });
+      } catch {
+        lb = null; // network failure — keep any existing rating
+      }
 
       if (tmdb.posterUrl) stats.tmdbHits++;
-      if (lb.rating != null) stats.lbHits++;
-      if (!tmdb.posterUrl && lb.rating == null) stats.misses++;
+      if (lb?.rating != null) stats.lbHits++;
+      if (!tmdb.posterUrl && lb?.rating == null) stats.misses++;
 
       await prisma.movie.update({
         where: { id: m.id },
         data: {
-          // coalesce: never erase a previously-good value with a fresh null
+          // Posters: coalesce (never clear a good poster on a transient TMDB null).
           tmdbId: tmdb.tmdbId ?? m.tmdbId,
           posterUrl: tmdb.posterUrl ?? m.posterUrl,
-          letterboxdRating: lb.rating ?? m.letterboxdRating,
-          letterboxdUrl: lb.url ?? m.letterboxdUrl,
+          // Letterboxd: if the lookup actually ran (lb != null), trust its result even
+          // when null — that's how a wrong match (e.g. 1963 "Passenger") gets corrected.
+          letterboxdRating: lb ? lb.rating : m.letterboxdRating,
+          letterboxdUrl: lb ? lb.url : m.letterboxdUrl,
           metadataCheckedAt: new Date(),
         },
       });
