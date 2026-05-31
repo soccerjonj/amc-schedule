@@ -510,6 +510,8 @@ const MovieCard = memo(function MovieCard({
   const total = group.shows.length;
   const showGroups = expanded || total <= CHIP_LIMIT ? groups : trimGroups(groups, CHIP_LIMIT);
   const hidden = total - countShows(showGroups);
+  const worldCup = isWorldCup(movie.title);
+  const title = displayTitle(movie.title);
 
   return (
     <article
@@ -519,34 +521,37 @@ const MovieCard = memo(function MovieCard({
           : "border-line hover:bg-surface-2"
       }`}
     >
-      {density !== "list" && (
-        <div className="relative aspect-[2/3] w-10 flex-none self-start overflow-hidden rounded bg-surface-3">
-          {movie.posterUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={posterSrc(movie.posterUrl)}
-              alt=""
-              loading="lazy"
-              decoding="async"
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center">
-              <FilmIcon className="h-4 w-4 text-ink-3" />
-            </div>
-          )}
-        </div>
-      )}
+      {density !== "list" &&
+        (worldCup ? (
+          <WorldCupPoster />
+        ) : (
+          <div className="relative aspect-[2/3] w-10 flex-none self-start overflow-hidden rounded bg-surface-3">
+            {movie.posterUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={posterSrc(movie.posterUrl)}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center">
+                <FilmIcon className="h-4 w-4 text-ink-3" />
+              </div>
+            )}
+          </div>
+        ))}
 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-start gap-1.5">
           <h3 className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink">
-            {movie.title}
+            {title}
           </h3>
           {movie.letterboxdRating != null && <RatingBadge movie={movie} />}
           <button
-            onClick={() => onHide(movie.id, movie.title)}
-            aria-label={`Hide ${movie.title} from all days`}
+            onClick={() => onHide(movie.id, title)}
+            aria-label={`Hide ${title} from all days`}
             title="Hide this movie"
             className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-60 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
@@ -572,7 +577,7 @@ const MovieCard = memo(function MovieCard({
                 {g.tag && <span className="text-accent"> {g.tag}</span>}
               </span>
               {g.shows.map((s) => (
-                <TimeChip key={s.id} s={s} movieTitle={movie.title} dayLabel={dayLabel} />
+                <TimeChip key={s.id} s={s} movieTitle={title} dayLabel={dayLabel} />
               ))}
             </div>
           ))}
@@ -711,6 +716,36 @@ function compactTime(t: string): string {
 
 function theatreLabel(slug: string, fallback: string): string {
   return THEATRE_LABEL[slug] ?? fallback;
+}
+
+const WORLD_CUP_RE = /copa mundial de la fifa|fifa world cup/i;
+
+function isWorldCup(title: string): boolean {
+  return WORLD_CUP_RE.test(title);
+}
+
+// FIFA broadcasts come as "México vs. Sudáfrica - Telemundo presenta la Copa
+// Mundial de la FIFA 2026" — trim to just the matchup before the " - " separator.
+function displayTitle(title: string): string {
+  if (isWorldCup(title)) return title.split(/\s+[-–—]\s+/)[0].trim() || title;
+  return title;
+}
+
+// A generic soccer/World-Cup tile used in the poster slot for FIFA broadcasts,
+// which have no film poster on TMDB.
+function WorldCupPoster() {
+  return (
+    <div
+      aria-hidden="true"
+      className="flex aspect-[2/3] w-10 flex-none self-start items-center justify-center overflow-hidden rounded bg-gradient-to-br from-emerald-600 to-sky-700"
+    >
+      <svg viewBox="0 0 24 24" className="h-5 w-5 text-white" fill="none" stroke="currentColor" strokeWidth="1.4">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 8.2l3.4 2.5-1.3 4H9.9l-1.3-4L12 8.2z" fill="currentColor" stroke="none" />
+        <path d="M12 3.2v3M20.6 11.2l-3.1.4M17.1 18.8l-1.6-2.9M8.5 18.8l1.6-2.9M3.4 11.2l3.1.4" />
+      </svg>
+    </div>
+  );
 }
 
 function asCategory(v: string | null): Category {
