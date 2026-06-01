@@ -9,6 +9,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const RARE_THRESHOLD = 2;
+// A film in "wide rotation" (multiple showtimes per day) is easy to find in the
+// AMC app, so its throwback/indie/foreign *label* stays but it no longer counts
+// as a highlighted gem. Measured by avg showtimes on the days it plays, so it's
+// window-invariant — a once-a-day arthouse run (≈1/day) stays a gem, a release
+// with several showtimes a day does not.
+const MAINSTREAM_MIN_PER_DAY = 3;
 
 // Shape shared by both the live-DB query and the bundled snapshot, so the
 // enrichment/filtering below is identical regardless of source.
@@ -117,11 +123,20 @@ export async function GET(req: NextRequest) {
   // scales with the window so "rare" always means ≤ RARE_THRESHOLD per week —
   // a week (7d) stays ≤2, a month (28d) becomes ≤8 — consistent across views.
   const counts = new Map<string, number>();
-  for (const r of rows) counts.set(r.movieId, (counts.get(r.movieId) ?? 0) + 1);
+  const daysByMovie = new Map<string, Set<string>>();
+  for (const r of rows) {
+    counts.set(r.movieId, (counts.get(r.movieId) ?? 0) + 1);
+    const dk = DateTime.fromJSDate(r.startsAt, { zone: THEATRE_TIMEZONE }).toISODate()!;
+    (daysByMovie.get(r.movieId) ?? daysByMovie.set(r.movieId, new Set()).get(r.movieId)!).add(dk);
+  }
   const rareThreshold = RARE_THRESHOLD * (days / 7);
 
   const enriched = rows.map((r) => {
-    const isRare = (counts.get(r.movieId) ?? 0) <= rareThreshold;
+    const count = counts.get(r.movieId) ?? 0;
+    const dayCount = daysByMovie.get(r.movieId)?.size ?? 1;
+    const isRare = count <= rareThreshold;
+    // Wide rotation = several showtimes per playing day → not a hidden gem.
+    const isMainstream = count / dayCount >= MAINSTREAM_MIN_PER_DAY;
     return {
       id: r.id,
       startsAt: r.startsAt.toISOString(),
@@ -143,8 +158,14 @@ export async function GET(req: NextRequest) {
         letterboxdUrl: r.movie.letterboxdUrl,
       },
       theatre: { slug: r.theatre.slug, name: r.theatre.name },
+      // Special events, throwbacks (limited re-screenings/repertory), and rare
+      // films always highlight. Indie/foreign are new releases that can be in
+      // wide rotation, so they only highlight when they're not easy to catch.
       isGem:
-        r.movie.isClassic || r.movie.isSpecialEvent || r.movie.isIndie || r.movie.isForeign || isRare,
+        r.movie.isSpecialEvent ||
+        r.movie.isClassic ||
+        isRare ||
+        ((r.movie.isIndie || r.movie.isForeign) && !isMainstream),
     };
   });
 
