@@ -82,7 +82,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   if (shows) metaParts.push(`${shows.length} showtime${shows.length === 1 ? "" : "s"} · ${days.length} day${days.length === 1 ? "" : "s"}`);
 
   return (
-    <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-4">
+    <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-4">
       <button
         onClick={() => router.back()}
         className="mb-3 inline-flex items-center gap-1 rounded-full border border-line px-3 py-1.5 text-sm text-ink-2 transition hover:border-line-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -124,9 +124,11 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
             </div>
           </header>
 
-          <div className="border-b border-line">
+          {/* Day-card grid — mirrors the website's week view: one bordered column
+              per playing date, with the showtimes (theatre + format + chips) inside. */}
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7">
             {days.map(([day, dayShows]) => (
-              <DayBlock key={day} day={day} shows={dayShows} bySeries={kind === "series"} />
+              <DayCard key={day} day={day} shows={dayShows} bySeries={kind === "series"} />
             ))}
           </div>
         </>
@@ -135,45 +137,50 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   );
 }
 
-// One compact row per day: a narrow date column on the left, showtimes flowing
-// inline on the right — fits many more dates on screen than stacked cards.
-function DayBlock({ day, shows, bySeries }: { day: string; shows: ApiShowtime[]; bySeries: boolean }) {
+// A single day column, styled like the week view's DayColumn.
+function DayCard({ day, shows, bySeries }: { day: string; shows: ApiShowtime[]; bySeries: boolean }) {
   const dt = DateTime.fromISO(day, { zone: TZ });
   const isToday = day === todayISO();
   return (
-    <div className={`flex gap-3 border-t border-line py-1.5 ${isToday ? "bg-accent/[0.06]" : ""}`}>
-      <div className={`w-12 shrink-0 pt-0.5 text-right tabular-nums ${isToday ? "text-accent" : "text-ink-2"}`}>
-        <div className="text-[10px] font-semibold uppercase leading-none">{dt.toFormat("ccc")}</div>
-        <div className="text-sm font-semibold leading-tight">{dt.toFormat("LLL d")}</div>
-      </div>
-      <div className="min-w-0 flex-1">
+    <section
+      className={`flex flex-col rounded-xl border bg-surface ${isToday ? "border-accent/40 ring-1 ring-accent/20" : "border-line"}`}
+    >
+      <h2
+        className={`flex items-baseline justify-between gap-2 rounded-t-xl border-b border-line px-2 py-1.5 ${isToday ? "bg-surface-2" : ""}`}
+      >
+        <span className={`font-display text-[11px] font-semibold uppercase tracking-[0.1em] ${isToday ? "text-accent" : "text-ink-2"}`}>
+          {dt.toFormat("ccc")}
+        </span>
+        <span className={`text-sm font-semibold ${isToday ? "text-accent" : "text-ink"}`}>{dt.toFormat("LLL d")}</span>
+      </h2>
+      <div className="flex flex-col gap-2 p-1.5">
         {bySeries ? <SeriesDay shows={shows} dt={dt} /> : <MovieDay shows={shows} dt={dt} />}
       </div>
-    </div>
+    </section>
   );
 }
 
-// Theatre label + its chips, kept together so they wrap as a unit.
+// Theatre label above its row of time chips (matches the week view's MovieCard).
 function TheatreTimes({ g, title, dayLabel }: { g: ShowGroup; title: string; dayLabel: string }) {
   return (
-    <span className="inline-flex flex-wrap items-center gap-1">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.03em] text-ink-3">
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-[0.03em] text-ink-3">
         {theatreLabel(g.theatre.slug, g.theatre.name)}
         {g.tag && <span className="text-accent"> {g.tag}</span>}
       </span>
       {g.shows.map((s) => (
         <TimeChip key={s.id} s={s} movieTitle={title} dayLabel={dayLabel} />
       ))}
-    </span>
+    </div>
   );
 }
 
-// Single-movie day: all theatre groups flow inline on one wrapping line.
+// Single-movie day: a theatre row per theatre/format.
 function MovieDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
   const title = displayTitle(shows[0].movie.title);
   const dayLabel = dt.toFormat("ccc, LLL d");
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+    <div className="flex flex-col gap-1">
       {groupShowtimes(shows).map((g) => (
         <TheatreTimes key={g.key} g={g} title={title} dayLabel={dayLabel} />
       ))}
@@ -181,7 +188,7 @@ function MovieDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
   );
 }
 
-// Series day: each film on its own compact line (title inline with its times).
+// Series day: each film that screens that day, with its own theatre rows.
 function SeriesDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
   const dayLabel = dt.toFormat("ccc, LLL d");
   const byMovie = new Map<string, ApiShowtime[]>();
@@ -192,18 +199,18 @@ function SeriesDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
   }
   const films = [...byMovie.values()].sort((a, b) => (a[0].startsAt < b[0].startsAt ? -1 : 1));
   return (
-    <div className="flex flex-col gap-1">
+    <>
       {films.map((filmShows) => {
         const title = displayTitle(filmShows[0].movie.title);
         return (
-          <div key={filmShows[0].movie.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="text-[12px] font-semibold text-ink">{title}</span>
+          <div key={filmShows[0].movie.id} className="flex flex-col gap-0.5">
+            <h3 className="text-[12px] font-semibold leading-tight text-ink">{title}</h3>
             {groupShowtimes(filmShows).map((g) => (
               <TheatreTimes key={g.key} g={g} title={title} dayLabel={dayLabel} />
             ))}
           </div>
         );
       })}
-    </div>
+    </>
   );
 }
