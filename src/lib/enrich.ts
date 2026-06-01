@@ -142,17 +142,30 @@ async function tmdbSearch(
   return Array.isArray(data.results) ? data.results : [];
 }
 
+async function tmdbGetById(
+  id: number,
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<TmdbSearchResult | undefined> {
+  const res = await fetch(`${TMDB_BASE}/movie/${id}?api_key=${apiKey}`, { signal });
+  if (!res.ok) return undefined;
+  const m = (await res.json()) as TmdbSearchResult;
+  return typeof m.id === "number" ? m : undefined;
+}
+
 export async function fetchTmdbPoster(
   norm: NormalizedTitle,
-  opts: { apiKey?: string; signal?: AbortSignal } = {},
+  opts: { apiKey?: string; signal?: AbortSignal; tmdbId?: number | null } = {},
 ): Promise<TmdbResult> {
   const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
   const empty: TmdbResult = { posterUrl: null, tmdbId: null, year: null, title: null };
   if (!apiKey) return empty;
   try {
     const signal = opts.signal ?? AbortSignal.timeout(8000);
-    const results = await tmdbSearch(norm.query, apiKey, signal);
-    const pick = pickTmdbResult(results, norm);
+    // Already-resolved movies: fetch by id (1 request, no re-matching). Fall back
+    // to a fresh text search if there's no id yet or the id lookup fails.
+    let pick = opts.tmdbId ? await tmdbGetById(opts.tmdbId, apiKey, signal) : undefined;
+    if (!pick) pick = pickTmdbResult(await tmdbSearch(norm.query, apiKey, signal), norm);
     if (!pick) return empty;
     const y = pick.release_date ? parseInt(pick.release_date.slice(0, 4), 10) : NaN;
     return {
@@ -249,9 +262,20 @@ async function fetchFilmPage(
 // "no right-year film" returns null so a wrong rating is cleared rather than kept.
 export async function fetchLetterboxdRating(
   norm: NormalizedTitle,
-  opts: { signal?: AbortSignal; year?: number | null; altTitle?: string | null } = {},
+  opts: {
+    signal?: AbortSignal;
+    year?: number | null;
+    altTitle?: string | null;
+    knownUrl?: string | null;
+  } = {},
 ): Promise<LetterboxdResult> {
   const sig = () => opts.signal ?? AbortSignal.timeout(8000);
+  // Already-resolved movies: refresh the rating straight from the known film page
+  // (1 request) instead of re-running slug guessing. Fall through if it's gone.
+  if (opts.knownUrl) {
+    const page = await fetchFilmPage(opts.knownUrl, sig());
+    if (page.status === 200) return { rating: page.rating, url: opts.knownUrl };
+  }
   const target = opts.year ?? norm.year ?? null;
   const yearClose = (y: number | null) => target == null || y == null || Math.abs(y - target) <= 1;
 
@@ -348,10 +372,16 @@ export async function enrichMovies(
 
     try {
       // TMDB first so its matched release year can disambiguate the Letterboxd film.
-      const tmdb = await fetchTmdbPoster(norm, { apiKey });
+      // Reuse cached ids (tmdbId / letterboxdUrl) so re-checks skip search + slug
+      // guessing — just refresh by id/url.
+      const tmdb = await fetchTmdbPoster(norm, { apiKey, tmdbId: m.tmdbId });
       let lb: LetterboxdResult | null = null;
       try {
-        lb = await fetchLetterboxdRating(norm, { year: tmdb.year ?? norm.year, altTitle: tmdb.title });
+        lb = await fetchLetterboxdRating(norm, {
+          year: tmdb.year ?? norm.year,
+          altTitle: tmdb.title,
+          knownUrl: m.letterboxdUrl,
+        });
       } catch {
         lb = null; // network failure — keep any existing rating
       }

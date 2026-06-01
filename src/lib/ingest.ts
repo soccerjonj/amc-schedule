@@ -30,23 +30,24 @@ async function upsertTheatres(theatres: TheatreRef[]) {
   }
 }
 
-async function upsertMovieFromShowtimes(movieId: string, shows: RawShowtime[]) {
-  const existing = await prisma.movie.findUnique({ where: { id: movieId } });
-  const prevAttrs: string[] = existing ? safeParse(existing.attributes) : [];
-  const attrSet = new Set(prevAttrs);
+async function upsertMovieFromShowtimes(
+  movieId: string,
+  shows: RawShowtime[],
+  releaseYear: number | null,
+) {
+  // A movie's AMC attributes are program-level (same movieId → same labels across
+  // its showtimes), so the day's shows are exhaustive — no need to read the
+  // existing row to merge. The release year is preloaded once (see ingest()).
+  const attrSet = new Set<string>();
   for (const s of shows) s.attributes.forEach((a) => attrSet.add(a));
   const attributes = [...attrSet];
   // Classify from real AMC attribute labels only — marketing/format headings
   // (e.g. "Fan First Premiere") produce false positives. Recomputed fresh each
   // run so flags stay accurate as listings change.
   const first = shows[0];
-  // Pass the previously-enriched release year so the "old film => Classic/Fan Fave"
-  // heuristic survives re-scrapes (enrichment sets releaseYear; it persists here).
-  const cls = classify({
-    title: first.movieTitle,
-    attributes,
-    releaseYear: existing?.releaseYear ?? null,
-  });
+  // releaseYear (from a prior enrichment) keeps the "old film => Throwback/Fan
+  // Fave" heuristic stable across re-scrapes; enrichMovies refreshes it later.
+  const cls = classify({ title: first.movieTitle, attributes, releaseYear });
   const flags = {
     isClassic: cls.isClassic,
     isSpecialEvent: cls.isSpecialEvent,
@@ -71,15 +72,6 @@ async function upsertMovieFromShowtimes(movieId: string, shows: RawShowtime[]) {
   });
 }
 
-function safeParse(json: string): string[] {
-  try {
-    const v = JSON.parse(json);
-    return Array.isArray(v) ? v : [];
-  } catch {
-    return [];
-  }
-}
-
 export interface IngestOptions {
   days?: number;
   theatres?: TheatreRef[];
@@ -91,6 +83,12 @@ export async function ingest(opts: IngestOptions = {}) {
   const dates = dateWindow(days);
   await upsertTheatres(theatres);
 
+  // Preload each movie's enriched release year once (instead of a findUnique per
+  // movie per day) so classification stays correct without thousands of round-trips.
+  const yearByMovie = new Map<string, number | null>();
+  for (const m of await prisma.movie.findMany({ select: { id: true, releaseYear: true } }))
+    yearByMovie.set(m.id, m.releaseYear);
+
   const provider = getProvider();
   await provider.open();
   const stats = { theatres: theatres.length, dates: dates.length, showtimes: 0, errors: 0 };
@@ -100,7 +98,7 @@ export async function ingest(opts: IngestOptions = {}) {
       for (const date of dates) {
         try {
           const shows = await provider.getShowtimes(theatre, date);
-          await persistDay(theatre, date, shows);
+          await persistDay(theatre, date, shows, yearByMovie);
           stats.showtimes += shows.length;
           console.log(`  ${theatre.slug} ${date}: ${shows.length} showtimes`);
         } catch (err) {
@@ -128,7 +126,12 @@ export async function ingest(opts: IngestOptions = {}) {
   return stats;
 }
 
-async function persistDay(theatre: TheatreRef, date: string, rawShows: RawShowtime[]) {
+async function persistDay(
+  theatre: TheatreRef,
+  date: string,
+  rawShows: RawShowtime[],
+  yearByMovie: Map<string, number | null>,
+) {
   // Drop non-public listings (e.g. private theatre rentals) so they never enter the DB.
   const shows = rawShows.filter((s) => !isHiddenTitle(s.movieTitle));
 
@@ -139,7 +142,8 @@ async function persistDay(theatre: TheatreRef, date: string, rawShows: RawShowti
     arr.push(s);
     byMovie.set(s.movieId, arr);
   }
-  for (const [movieId, ms] of byMovie) await upsertMovieFromShowtimes(movieId, ms);
+  for (const [movieId, ms] of byMovie)
+    await upsertMovieFromShowtimes(movieId, ms, yearByMovie.get(movieId) ?? null);
 
   const { start, end } = dayBoundsUtc(date);
   // dedupe by showtimeId (a movie can appear under multiple format blocks)

@@ -50,6 +50,15 @@ jobs:
       - name: Ensure DB schema (idempotent)
         run: npx prisma db push
 
+      # Cache the ~150MB Chromium binary across runs (keyed on the lockfile so it
+      # invalidates when the Playwright version changes). On a hit, the install
+      # below skips the download and only sets up OS deps.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 

@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { DateTime } from "luxon";
 import { THEATRE_TIMEZONE } from "../theatres";
 import type { RawShowtime, ShowtimeProvider, TheatreRef } from "./types";
@@ -28,6 +28,7 @@ export class AmcScraperProvider implements ShowtimeProvider {
   name = "amc-website-scraper";
   private browser: Browser | null = null;
   private ctx: BrowserContext | null = null;
+  private page: Page | null = null;
 
   async open() {
     this.browser = await chromium.launch({
@@ -45,6 +46,9 @@ export class AmcScraperProvider implements ShowtimeProvider {
       Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
       Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3] });
     });
+    // Reuse a single page across all loads — goto() resets the DOM but keeps the
+    // session cookie, so we don't pay newPage()/close() overhead ~450 times.
+    this.page = await this.ctx.newPage();
   }
 
   async close() {
@@ -52,13 +56,14 @@ export class AmcScraperProvider implements ShowtimeProvider {
     await this.browser?.close();
     this.ctx = null;
     this.browser = null;
+    this.page = null;
   }
 
   async getShowtimes(theatre: TheatreRef, date: string): Promise<RawShowtime[]> {
-    if (!this.ctx) throw new Error("provider not opened");
+    const page = this.page;
+    if (!page) throw new Error("provider not opened");
     const url = `${BASE}/movie-theatres/${theatre.urlPath}/showtimes?date=${date}`;
-    const page = await this.ctx.newPage();
-    try {
+    {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
       // The real showtimes page (past Cloudflare's waiting room) is ready when its
       // <h1> reads "Showtimes" — present on both populated AND empty days.
@@ -80,7 +85,7 @@ export class AmcScraperProvider implements ShowtimeProvider {
       if (!noShowtimes) {
         await page.waitForSelector('a[href^="/showtimes/"]', { timeout: 6000 }).catch(() => {});
       }
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(250);
 
       const dom: DomShowtime[] = await page.evaluate(() => {
         const movieMap: Record<string, string> = {};
@@ -142,8 +147,6 @@ export class AmcScraperProvider implements ShowtimeProvider {
         });
       }
       return results;
-    } finally {
-      await page.close();
     }
   }
 }
