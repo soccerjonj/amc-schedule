@@ -12,6 +12,7 @@ import {
   type ApiResponse,
   type ApiShowtime,
   type Movie,
+  type ShowGroup,
   TZ,
   todayISO,
   theatreLabel,
@@ -102,8 +103,8 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
         <p className="py-20 text-center text-sm text-ink-3">No upcoming showtimes for this {kind}.</p>
       ) : (
         <>
-          <header className="mb-5 flex gap-4">
-            {rep && <Poster movie={rep} sizeCls="w-24 sm:w-28" />}
+          <header className="mb-4 flex gap-3">
+            {rep && <Poster movie={rep} sizeCls="w-16 sm:w-20" />}
             <div className="flex min-w-0 flex-1 flex-col gap-2">
               <div className="flex items-start gap-2">
                 <h1 className="min-w-0 flex-1 font-display text-xl font-semibold leading-tight text-ink sm:text-2xl">
@@ -123,7 +124,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
             </div>
           </header>
 
-          <div className="flex flex-col gap-2">
+          <div className="border-b border-line">
             {days.map(([day, dayShows]) => (
               <DayBlock key={day} day={day} shows={dayShows} bySeries={kind === "series"} />
             ))}
@@ -134,50 +135,53 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   );
 }
 
+// One compact row per day: a narrow date column on the left, showtimes flowing
+// inline on the right — fits many more dates on screen than stacked cards.
 function DayBlock({ day, shows, bySeries }: { day: string; shows: ApiShowtime[]; bySeries: boolean }) {
   const dt = DateTime.fromISO(day, { zone: TZ });
   const isToday = day === todayISO();
-
   return (
-    <section
-      className={`rounded-xl border bg-surface ${isToday ? "border-accent/40 ring-1 ring-accent/20" : "border-line"}`}
-    >
-      <h2 className="flex items-baseline justify-between gap-2 border-b border-line px-3 py-2">
-        <span className={`font-display text-sm font-semibold uppercase tracking-[0.12em] ${isToday ? "text-accent" : "text-ink-2"}`}>
-          {dt.toFormat("cccc")}
-        </span>
-        <span className={`text-sm font-semibold ${isToday ? "text-accent" : "text-ink"}`}>{dt.toFormat("LLL d")}</span>
-      </h2>
-      <div className="flex flex-col gap-2.5 p-3">
+    <div className={`flex gap-3 border-t border-line py-1.5 ${isToday ? "bg-accent/[0.06]" : ""}`}>
+      <div className={`w-12 shrink-0 pt-0.5 text-right tabular-nums ${isToday ? "text-accent" : "text-ink-2"}`}>
+        <div className="text-[10px] font-semibold uppercase leading-none">{dt.toFormat("ccc")}</div>
+        <div className="text-sm font-semibold leading-tight">{dt.toFormat("LLL d")}</div>
+      </div>
+      <div className="min-w-0 flex-1">
         {bySeries ? <SeriesDay shows={shows} dt={dt} /> : <MovieDay shows={shows} dt={dt} />}
       </div>
-    </section>
+    </div>
   );
 }
 
-// Single-movie day: theatre rows, each with a row of time chips.
+// Theatre label + its chips, kept together so they wrap as a unit.
+function TheatreTimes({ g, title, dayLabel }: { g: ShowGroup; title: string; dayLabel: string }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span className="text-[10px] font-semibold uppercase tracking-[0.03em] text-ink-3">
+        {theatreLabel(g.theatre.slug, g.theatre.name)}
+        {g.tag && <span className="text-accent"> {g.tag}</span>}
+      </span>
+      {g.shows.map((s) => (
+        <TimeChip key={s.id} s={s} movieTitle={title} dayLabel={dayLabel} />
+      ))}
+    </span>
+  );
+}
+
+// Single-movie day: all theatre groups flow inline on one wrapping line.
 function MovieDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
-  const groups = groupShowtimes(shows);
   const title = displayTitle(shows[0].movie.title);
   const dayLabel = dt.toFormat("ccc, LLL d");
   return (
-    <>
-      {groups.map((g) => (
-        <div key={g.key} className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-0.5 w-24 shrink-0 text-[11px] font-semibold uppercase tracking-[0.03em] text-ink-3">
-            {theatreLabel(g.theatre.slug, g.theatre.name)}
-            {g.tag && <span className="text-accent"> {g.tag}</span>}
-          </span>
-          {g.shows.map((s) => (
-            <TimeChip key={s.id} s={s} movieTitle={title} dayLabel={dayLabel} />
-          ))}
-        </div>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      {groupShowtimes(shows).map((g) => (
+        <TheatreTimes key={g.key} g={g} title={title} dayLabel={dayLabel} />
       ))}
-    </>
+    </div>
   );
 }
 
-// Series day: each film that screens that day, with its theatres + times.
+// Series day: each film on its own compact line (title inline with its times).
 function SeriesDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
   const dayLabel = dt.toFormat("ccc, LLL d");
   const byMovie = new Map<string, ApiShowtime[]>();
@@ -188,26 +192,18 @@ function SeriesDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
   }
   const films = [...byMovie.values()].sort((a, b) => (a[0].startsAt < b[0].startsAt ? -1 : 1));
   return (
-    <>
+    <div className="flex flex-col gap-1">
       {films.map((filmShows) => {
         const title = displayTitle(filmShows[0].movie.title);
         return (
-          <div key={filmShows[0].movie.id} className="flex flex-col gap-1">
-            <h3 className="text-[13px] font-semibold text-ink">{title}</h3>
+          <div key={filmShows[0].movie.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-[12px] font-semibold text-ink">{title}</span>
             {groupShowtimes(filmShows).map((g) => (
-              <div key={g.key} className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-0.5 w-24 shrink-0 text-[11px] font-semibold uppercase tracking-[0.03em] text-ink-3">
-                  {theatreLabel(g.theatre.slug, g.theatre.name)}
-                  {g.tag && <span className="text-accent"> {g.tag}</span>}
-                </span>
-                {g.shows.map((s) => (
-                  <TimeChip key={s.id} s={s} movieTitle={title} dayLabel={dayLabel} />
-                ))}
-              </div>
+              <TheatreTimes key={g.key} g={g} title={title} dayLabel={dayLabel} />
             ))}
           </div>
         );
       })}
-    </>
+    </div>
   );
 }
