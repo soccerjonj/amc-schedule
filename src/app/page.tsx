@@ -47,7 +47,7 @@ type Density = "compact" | "list";
 const CATEGORIES: { value: Category; label: string }[] = [
   { value: "all", label: "All" },
   { value: "gems", label: "Gems" },
-  { value: "classic", label: "Classics" },
+  { value: "classic", label: "Throwbacks" },
   { value: "special", label: "Special" },
 ];
 
@@ -569,7 +569,7 @@ const MovieCard = memo(function MovieCard({
           movie.isForeign ||
           movie.isRare) && (
           <div className="flex flex-wrap gap-1">
-            {movie.isClassic && <Badge tone="classic">Classic</Badge>}
+            {movie.isClassic && <Badge tone="classic">Throwback</Badge>}
             {movie.isSpecialEvent && <Badge tone="special">Special</Badge>}
             {movie.isIndie && <Badge tone="indie">Indie</Badge>}
             {movie.isForeign && <Badge tone="foreign">Foreign</Badge>}
