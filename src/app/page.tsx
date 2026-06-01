@@ -1223,18 +1223,18 @@ function UpcomingView({
     );
   }
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-5">
       {sections.map((s) => (
         <section key={s.key} aria-label={s.label}>
-          <h2 className="mb-2.5 flex items-baseline gap-2">
-            <span className="font-display text-base font-semibold uppercase tracking-[0.12em] text-ink">
+          <h2 className="mb-2 flex items-baseline gap-2">
+            <span className="font-display text-sm font-semibold uppercase tracking-[0.12em] text-ink">
               {s.label}
             </span>
             <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink-2">
               {buckets[s.key].length}
             </span>
           </h2>
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {buckets[s.key].map((it) => (
               <UpcomingItemCard key={it.key} item={it} onJump={onJumpToDay} onHide={onHide} />
             ))}
@@ -1256,15 +1256,17 @@ function UpcomingItemCard({
 }) {
   const { movie } = item;
   const fmt = (iso: string) => DateTime.fromISO(iso, { zone: TZ }).toFormat("ccc, LLL d");
-  const range =
-    item.firstDateKey === item.lastDateKey ? fmt(item.firstDateKey) : `${fmt(item.firstDateKey)} – ${fmt(item.lastDateKey)}`;
-  const dateLine = item.isOpening ? `Opens ${fmt(item.firstDateKey)}` : `Next: ${fmt(item.firstDateKey)}`;
-  const playLine = item.isSeries
-    ? `${item.memberCount} ${item.memberCount === 1 ? "event" : "events"} · ${range}`
-    : item.playDates.length === 1
-      ? `One date · ${fmt(item.firstDateKey)}`
-      : `${item.playDates.length} dates · ${range}`;
+  // Primary line = the date that matters: the opening day, or the play-range.
+  const primary = item.isOpening
+    ? `Opens ${fmt(item.firstDateKey)}`
+    : item.firstDateKey === item.lastDateKey
+      ? fmt(item.firstDateKey)
+      : `${fmt(item.firstDateKey)} – ${fmt(item.lastDateKey)}`;
+  // Secondary line folds count + theatres together to save vertical space.
+  const count = item.isSeries ? item.memberCount : item.playDates.length;
+  const countWord = item.isSeries ? (count === 1 ? "event" : "events") : count === 1 ? "date" : "dates";
   const theatres = item.theatres.map((t) => theatreLabel(t.slug, t.name)).join(" · ");
+  const meta = [count > 1 ? `${count} ${countWord}` : "", theatres].filter(Boolean).join(" · ");
   const showRare = item.bucket === "rare" && !movie.isIndie && !movie.isForeign;
   const hasBadges =
     !item.isSeries && (movie.isClassic || movie.isSpecialEvent || movie.isIndie || movie.isForeign || showRare);
@@ -1280,19 +1282,34 @@ function UpcomingItemCard({
           onJump(item.firstDateKey);
         }
       }}
-      aria-label={`${item.title} — ${dateLine}. Open week view.`}
-      className="group relative flex cursor-pointer gap-2.5 rounded-lg border border-gem/25 bg-gem/[0.03] p-2 text-left transition hover:bg-gem/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      aria-label={`${item.title} — ${primary}. Open week view.`}
+      className="group flex cursor-pointer gap-2 rounded-lg border border-gem/25 bg-gem/[0.03] p-1.5 text-left transition hover:bg-gem/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
-      <Poster movie={movie} sizeCls="w-16" />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex items-start gap-1.5">
-          <h3 className="min-w-0 flex-1 break-words text-sm font-semibold leading-tight text-ink">
+      <Poster movie={movie} sizeCls="w-12" />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="flex items-start gap-1">
+          <h3 className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink">
             {item.title}
           </h3>
           {(movie.letterboxdRating != null || movie.letterboxdUrl) && (
             <span onClick={(e) => e.stopPropagation()}>
               <RatingBadge movie={movie} />
             </span>
+          )}
+          {!item.isSeries && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onHide(movie.id, item.title);
+              }}
+              aria-label={`Hide ${item.title}`}
+              title="Hide this movie"
+              className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-60 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
           )}
         </div>
         {hasBadges && (
@@ -1304,25 +1321,9 @@ function UpcomingItemCard({
             {showRare && <Badge tone="rare">Rare</Badge>}
           </div>
         )}
-        <p className={`text-xs font-semibold ${item.isOpening ? "text-accent" : "text-ink-2"}`}>{dateLine}</p>
-        <p className="text-[11px] text-ink-3">{playLine}</p>
-        {theatres && <p className="truncate text-[11px] text-ink-3">{theatres}</p>}
+        <p className={`text-[11px] font-semibold ${item.isOpening ? "text-accent" : "text-ink-2"}`}>{primary}</p>
+        {meta && <p className="truncate text-[11px] text-ink-3">{meta}</p>}
       </div>
-      {!item.isSeries && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onHide(movie.id, item.title);
-          }}
-          aria-label={`Hide ${item.title}`}
-          title="Hide this movie"
-          className="absolute right-1 top-1 rounded p-0.5 text-ink-3 opacity-0 transition hover:bg-surface-3 hover:text-rose-300 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent group-hover:opacity-100"
-        >
-          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
-      )}
     </article>
   );
 }
