@@ -2,45 +2,24 @@
 
 import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { DateTime } from "luxon";
-
-const TZ = "America/Chicago";
-
-interface Movie {
-  id: string;
-  title: string;
-  slug: string;
-  isClassic: boolean;
-  isSpecialEvent: boolean;
-  isIndie: boolean;
-  isForeign: boolean;
-  isRare: boolean;
-  releaseDate: string | null; // TMDB theatrical date (YYYY-MM-DD); premiere vs re-screening
-  posterUrl: string | null;
-  letterboxdRating: number | null;
-  letterboxdUrl: string | null;
-}
-
-interface ApiShowtime {
-  id: string;
-  startsAt: string;
-  dateKey: string;
-  time: string;
-  format: string | null;
-  ticketUrl: string;
-  movie: Movie;
-  theatre: { slug: string; name: string };
-  isGem: boolean;
-}
-
-interface ApiResponse {
-  start: string;
-  days: number;
-  dayKeys: string[];
-  theatres: { slug: string; name: string }[];
-  showtimes: ApiShowtime[];
-  total: number;
-}
+import {
+  type Movie,
+  type ApiShowtime,
+  type ApiResponse,
+  type ShowGroup,
+  TZ,
+  todayISO,
+  theatreLabel,
+  displayTitle,
+  seriesOf,
+  groupShowtimes,
+  Poster,
+  RatingBadge,
+  Badge,
+  TimeChip,
+} from "@/components/showtime-ui";
 
 type Category = "all" | "gems" | "classic" | "special";
 type Density = "compact" | "list";
@@ -52,14 +31,6 @@ const CATEGORIES: { value: Category; label: string }[] = [
   { value: "special", label: "Special" },
 ];
 
-const THEATRE_LABEL: Record<string, string> = {
-  "amc-river-east-21": "River East",
-  "amc-600-north-michigan-9": "600 N Mich",
-  "amc-newcity-14": "NewCity",
-  "amc-dine-in-block-37": "Block 37",
-  "amc-roosevelt-collection-16": "Roosevelt",
-};
-
 const CHIP_LIMIT = 7; // collapse long showtime lists behind a "+N" toggle
 const HIDDEN_KEY = "amc:hidden";
 const MONTH_SPAN = 28; // days in the rolling month grid (4 rows of 7); keep a multiple of 7
@@ -68,10 +39,6 @@ const UPCOMING_SPAN = 90; // days the Upcoming feed scans (the full scrape horiz
 const RARE_DAYS = 3; // ≤ this many distinct play-dates across the horizon ⇒ rare (window-stable)
 
 type Mode = "week" | "month" | "upcoming";
-
-function todayISO() {
-  return DateTime.now().setZone(TZ).startOf("day").toISODate()!;
-}
 
 function loadHidden(): Map<string, string> {
   if (typeof window === "undefined") return new Map();
@@ -397,14 +364,7 @@ function Calendar() {
             </button>
           </div>
         ) : mode === "upcoming" ? (
-          <UpcomingView
-            buckets={upcomingBuckets}
-            onJumpToDay={(day) => {
-              setWeekStart(day);
-              setMode("week");
-            }}
-            onHide={hideMovie}
-          />
+          <UpcomingView buckets={upcomingBuckets} onHide={hideMovie} />
         ) : mode === "month" ? (
           <MonthView
             dayKeys={data?.dayKeys ?? []}
@@ -741,12 +701,21 @@ const MovieCard = memo(function MovieCard({
           : "border-line hover:bg-surface-2"
       }`}
     >
-      {density !== "list" && <Poster movie={movie} sizeCls="w-10" />}
+      {density !== "list" && (
+        <Link href={`/movie/${movie.id}`} aria-label={`View showtimes for ${title}`} className="flex-none self-start">
+          <Poster movie={movie} sizeCls="w-10" />
+        </Link>
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-start gap-1.5">
           <h3 className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink">
-            {title}
+            <Link
+              href={`/movie/${movie.id}`}
+              className="rounded transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {title}
+            </Link>
           </h3>
           {(movie.letterboxdRating != null || movie.letterboxdUrl) && <RatingBadge movie={movie} />}
           <button
@@ -801,125 +770,6 @@ const MovieCard = memo(function MovieCard({
   );
 });
 
-function TimeChip({ s, movieTitle, dayLabel }: { s: ApiShowtime; movieTitle: string; dayLabel: string }) {
-  const tag = formatTag(s.format);
-  const label = `Buy tickets for ${movieTitle} at ${s.theatre.name}, ${dayLabel} ${s.time}${
-    tag ? `, ${tag}` : ""
-  } — opens AMC in a new tab`;
-  return (
-    <a
-      href={s.ticketUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label={label}
-      className="inline-flex items-center rounded border border-line bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-    >
-      {compactTime(s.time)}
-    </a>
-  );
-}
-
-function LetterboxdMark() {
-  // The Letterboxd three-dot mark (orange / green / blue) — shown when a film has
-  // a page but no average rating yet (e.g. unreleased).
-  return (
-    <svg viewBox="0 0 26 10" className="h-2.5 w-auto" aria-hidden="true">
-      <circle cx="5" cy="5" r="4.6" fill="#ff8000" />
-      <circle cx="13" cy="5" r="4.6" fill="#00e054" />
-      <circle cx="21" cy="5" r="4.6" fill="#40bcf4" />
-    </svg>
-  );
-}
-
-function RatingBadge({ movie }: { movie: Movie }) {
-  const hasRating = movie.letterboxdRating != null;
-  if (!hasRating && !movie.letterboxdUrl) return null;
-  const cls =
-    "inline-flex flex-none items-center gap-0.5 rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] font-bold text-lb ring-1 ring-lb/30";
-  const content = hasRating ? <>★ {movie.letterboxdRating!.toFixed(1)}</> : <LetterboxdMark />;
-  const aria = hasRating
-    ? `Letterboxd rating ${movie.letterboxdRating!.toFixed(1)} out of 5`
-    : "View on Letterboxd — not yet rated";
-  return movie.letterboxdUrl ? (
-    <a
-      href={movie.letterboxdUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label={`${aria} — opens in a new tab`}
-      className={`${cls} transition hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lb`}
-    >
-      {content}
-    </a>
-  ) : (
-    <span aria-label={aria} className={cls}>
-      {content}
-    </span>
-  );
-}
-
-function Badge({
-  tone,
-  children,
-}: {
-  tone: "classic" | "special" | "indie" | "foreign" | "rare";
-  children: React.ReactNode;
-}) {
-  const map = {
-    classic: "bg-classic/15 text-classic ring-classic/25",
-    special: "bg-special/15 text-special ring-special/25",
-    indie: "bg-emerald-500/15 text-emerald-300 ring-emerald-400/25",
-    foreign: "bg-orange-500/15 text-orange-300 ring-orange-400/25",
-    rare: "bg-rare/15 text-rare ring-rare/25",
-  };
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.04em] ring-1 ${map[tone]}`}>
-      {children}
-    </span>
-  );
-}
-
-function FilmIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
-    </svg>
-  );
-}
-
-interface ShowGroup {
-  key: string;
-  theatre: { slug: string; name: string };
-  tag: string | null; // shared format tag, shown once in the label
-  shows: ApiShowtime[];
-}
-
-// Group a movie's showtimes by theatre + format so the format label appears once
-// and each time renders as a tiny bare pill (several fit per row).
-function groupShowtimes(shows: ApiShowtime[]): ShowGroup[] {
-  const map = new Map<string, ShowGroup>();
-  for (const s of shows) {
-    const tag = formatTag(s.format);
-    const key = `${s.theatre.slug}|${tag ?? ""}`;
-    const g = map.get(key) ?? { key, theatre: s.theatre, tag, shows: [] };
-    g.shows.push(s);
-    map.set(key, g);
-  }
-  const groups = [...map.values()];
-  for (const g of groups) g.shows.sort((a, b) => (a.startsAt < b.startsAt ? -1 : 1));
-  groups.sort((a, b) => (a.shows[0].startsAt < b.shows[0].startsAt ? -1 : 1));
-  return groups;
-}
-
 function trimGroups(groups: ShowGroup[], limit: number): ShowGroup[] {
   const out: ShowGroup[] = [];
   let n = 0;
@@ -936,106 +786,8 @@ function countShows(groups: ShowGroup[]): number {
   return groups.reduce((n, g) => n + g.shows.length, 0);
 }
 
-// "7:00 PM" -> "7p", "7:30 PM" -> "7:30p", "11:30 AM" -> "11:30a".
-function compactTime(t: string): string {
-  const m = t.match(/^(\d{1,2}):(\d{2})\s*([AP])M$/i);
-  if (!m) return t;
-  const [, h, min, ap] = m;
-  const suffix = ap.toLowerCase();
-  return min === "00" ? `${h}${suffix}` : `${h}:${min}${suffix}`;
-}
-
-function theatreLabel(slug: string, fallback: string): string {
-  return THEATRE_LABEL[slug] ?? fallback;
-}
-
-const WORLD_CUP_RE = /copa mundial de la fifa|fifa world cup/i;
-
-function isWorldCup(title: string): boolean {
-  return WORLD_CUP_RE.test(title);
-}
-
-// FIFA broadcasts come as "México vs. Sudáfrica - Telemundo presenta la Copa
-// Mundial de la FIFA 2026" — trim to just the matchup before the " - " separator.
-function displayTitle(title: string): string {
-  if (isWorldCup(title)) return title.split(/\s+[-–—]\s+/)[0].trim() || title;
-  return title;
-}
-
-// Poster slot for FIFA World Cup broadcasts (no film poster on TMDB). Uses the
-// bundled World Cup image cropped to its emblem (object-top, since the artwork
-// puts the emblem up top and text below); falls back to a soccer-ball tile if the
-// image isn't present.
-function WorldCupPoster({ sizeCls = "w-10" }: { sizeCls?: string }) {
-  const [imgOk, setImgOk] = useState(true);
-  return (
-    <div
-      aria-hidden="true"
-      className={`relative flex aspect-[2/3] ${sizeCls} flex-none self-start items-center justify-center overflow-hidden rounded bg-gradient-to-br from-emerald-700 to-sky-800`}
-    >
-      <svg viewBox="0 0 24 24" className="h-5 w-5 text-white/85" fill="none" stroke="currentColor" strokeWidth="1.4">
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 8.2l3.4 2.5-1.3 4H9.9l-1.3-4L12 8.2z" fill="currentColor" stroke="none" />
-        <path d="M12 3.2v3M20.6 11.2l-3.1.4M17.1 18.8l-1.6-2.9M8.5 18.8l1.6-2.9M3.4 11.2l3.1.4" />
-      </svg>
-      {imgOk && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src="/world-cup.png"
-          alt=""
-          loading="lazy"
-          onError={() => setImgOk(false)}
-          className="absolute inset-0 h-full w-full bg-white object-cover object-top"
-        />
-      )}
-    </div>
-  );
-}
-
-// Shared poster slot: World Cup tile, TMDB art, or a film-glyph placeholder.
-// `sizeCls` sets the width (e.g. "w-10" in day cards, "w-16" in the Upcoming feed).
-function Poster({ movie, sizeCls = "w-10" }: { movie: Movie; sizeCls?: string }) {
-  if (isWorldCup(movie.title)) return <WorldCupPoster sizeCls={sizeCls} />;
-  return (
-    <div className={`relative aspect-[2/3] ${sizeCls} flex-none self-start overflow-hidden rounded bg-surface-3`}>
-      {movie.posterUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={posterSrc(movie.posterUrl)}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center">
-          <FilmIcon className="h-4 w-4 text-ink-3" />
-        </div>
-      )}
-    </div>
-  );
-}
-
 function asCategory(v: string | null): Category {
   return v === "gems" || v === "classic" || v === "special" ? v : "all";
-}
-
-// AMC's format strings are messy ("IMAX with Laser at AMC", "PRIME at AMC",
-// "RealD 3D", language/caption variants), so match by substring.
-function formatTag(format: string | null): string | null {
-  if (!format) return null;
-  const f = format.toLowerCase();
-  if (f.includes("imax")) return "IMAX";
-  if (f.includes("dolby")) return "Dolby";
-  if (f.includes("prime")) return "Prime";
-  if (f.includes("laser")) return "Laser";
-  if (f.includes("3d")) return "3D";
-  return null;
-}
-
-// Posters render as ~48px thumbnails; w185 is plenty and far lighter than the stored w342.
-function posterSrc(url: string): string {
-  return url.replace(/\/w\d+\//, "/w185/");
 }
 
 function shift(iso: string, days: number): string {
@@ -1089,19 +841,6 @@ const UPCOMING_SECTIONS: { key: UpcomingBucketKey; label: string }[] = [
   { key: "throwback", label: "Throwbacks" },
   { key: "rare", label: "Rare & indie" },
 ];
-
-// Recurring broadcast/festival programs collapse into ONE feed entry — otherwise
-// e.g. ~63 FIFA World Cup match rows would bury every other highlight.
-const SERIES_PATTERNS: { key: string; label: string; re: RegExp }[] = [
-  { key: "fifa-world-cup", label: "FIFA World Cup 2026", re: WORLD_CUP_RE },
-  { key: "ghibli-fest", label: "Studio Ghibli Fest", re: /ghibli fest/i },
-  { key: "met-opera", label: "The Met: Live in HD", re: /met opera|the met: live/i },
-];
-
-function seriesOf(title: string): { key: string; label: string } | null {
-  for (const p of SERIES_PATTERNS) if (p.re.test(title)) return { key: p.key, label: p.label };
-  return null;
-}
 
 // A genuine future opening: the first AMC showtime is a future day AND (when the
 // theatrical date is known) it lines up with that date — an OLD release date with
@@ -1207,11 +946,9 @@ function aggregateUpcoming(shows: ApiShowtime[]): UpcomingBuckets {
 
 function UpcomingView({
   buckets,
-  onJumpToDay,
   onHide,
 }: {
   buckets: UpcomingBuckets;
-  onJumpToDay: (day: string) => void;
   onHide: (id: string, title: string) => void;
 }) {
   const sections = UPCOMING_SECTIONS.filter((s) => buckets[s.key].length > 0);
@@ -1236,7 +973,7 @@ function UpcomingView({
           </h2>
           <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {buckets[s.key].map((it) => (
-              <UpcomingItemCard key={it.key} item={it} onJump={onJumpToDay} onHide={onHide} />
+              <UpcomingItemCard key={it.key} item={it} onHide={onHide} />
             ))}
           </div>
         </section>
@@ -1245,16 +982,11 @@ function UpcomingView({
   );
 }
 
-function UpcomingItemCard({
-  item,
-  onJump,
-  onHide,
-}: {
-  item: UpcomingItem;
-  onJump: (day: string) => void;
-  onHide: (id: string, title: string) => void;
-}) {
+function UpcomingItemCard({ item, onHide }: { item: UpcomingItem; onHide: (id: string, title: string) => void }) {
+  const router = useRouter();
   const { movie } = item;
+  // A collapsed series opens its series page; a single film opens its movie page.
+  const href = item.isSeries ? `/series/${item.key}` : `/movie/${item.key}`;
   const fmt = (iso: string) => DateTime.fromISO(iso, { zone: TZ }).toFormat("ccc, LLL d");
   // Primary line = the date that matters: the opening day, or the play-range.
   const primary = item.isOpening
@@ -1275,14 +1007,14 @@ function UpcomingItemCard({
     <article
       role="button"
       tabIndex={0}
-      onClick={() => onJump(item.firstDateKey)}
+      onClick={() => router.push(href)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onJump(item.firstDateKey);
+          router.push(href);
         }
       }}
-      aria-label={`${item.title} — ${primary}. Open week view.`}
+      aria-label={`${item.title} — ${primary}. View showtimes.`}
       className="group flex cursor-pointer gap-2 rounded-lg border border-gem/25 bg-gem/[0.03] p-1.5 text-left transition hover:bg-gem/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       <Poster movie={movie} sizeCls="w-12" />

@@ -46,6 +46,7 @@ interface LoadParams {
   end: Date;
   theatreSlugs: string[];
   q: string;
+  movieId: string; // when set, restrict to a single movie (detail page)
 }
 
 // When DATABASE_URL is set we read from the live DB; otherwise we serve the
@@ -62,6 +63,7 @@ async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug:
         startsAt: { gte: p.start, lt: p.end },
         theatre: { active: true, ...(p.theatreSlugs.length ? { slug: { in: p.theatreSlugs } } : {}) },
         ...(p.q ? { movie: { title: titleFilter } } : {}),
+        ...(p.movieId ? { movieId: p.movieId } : {}),
       },
       include: { movie: true, theatre: true },
       orderBy: { startsAt: "asc" },
@@ -80,6 +82,7 @@ async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug:
     .filter((s) => s.startsAt >= p.start && s.startsAt < p.end)
     .filter((s) => s.theatre.active && (!p.theatreSlugs.length || p.theatreSlugs.includes(s.theatre.slug)))
     .filter((s) => !ql || s.movie.title.toLowerCase().includes(ql))
+    .filter((s) => !p.movieId || s.movieId === p.movieId)
     .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
     .map((s) => ({
       id: s.id,
@@ -110,6 +113,7 @@ export async function GET(req: NextRequest) {
 
   const theatreSlugs = (sp.get("theatres") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const q = (sp.get("q") ?? "").trim();
+  const movieId = (sp.get("movieId") ?? "").trim();
   const category = (sp.get("category") ?? "all").toLowerCase();
 
   const loaded = await loadData({
@@ -117,6 +121,7 @@ export async function GET(req: NextRequest) {
     end: end.toJSDate(),
     theatreSlugs,
     q,
+    movieId,
   });
   const theatres = loaded.theatres;
   // Drop non-public listings (e.g. private theatre rentals) before anything else,
