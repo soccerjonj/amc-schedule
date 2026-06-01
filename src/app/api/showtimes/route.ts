@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
   const start = startParam
     ? DateTime.fromISO(startParam, { zone: THEATRE_TIMEZONE })
     : DateTime.now().setZone(THEATRE_TIMEZONE).startOf("day");
-  const days = Math.min(Math.max(parseInt(sp.get("days") ?? "7", 10) || 7, 1), 21);
+  const days = Math.min(Math.max(parseInt(sp.get("days") ?? "7", 10) || 7, 1), 42);
   const end = start.plus({ days });
 
   const theatreSlugs = (sp.get("theatres") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -113,12 +113,15 @@ export async function GET(req: NextRequest) {
   // so they're excluded from rareness counts and never rendered.
   const rows = loaded.rows.filter((r) => !isHiddenTitle(r.movie.title));
 
-  // rareness: count showtimes per movie within the visible window
+  // rareness: count showtimes per movie within the visible window. The threshold
+  // scales with the window so "rare" always means ≤ RARE_THRESHOLD per week —
+  // a week (7d) stays ≤2, a month (28d) becomes ≤8 — consistent across views.
   const counts = new Map<string, number>();
   for (const r of rows) counts.set(r.movieId, (counts.get(r.movieId) ?? 0) + 1);
+  const rareThreshold = RARE_THRESHOLD * (days / 7);
 
   const enriched = rows.map((r) => {
-    const isRare = (counts.get(r.movieId) ?? 0) <= RARE_THRESHOLD;
+    const isRare = (counts.get(r.movieId) ?? 0) <= rareThreshold;
     return {
       id: r.id,
       startsAt: r.startsAt.toISOString(),

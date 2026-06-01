@@ -61,6 +61,10 @@ const THEATRE_LABEL: Record<string, string> = {
 
 const CHIP_LIMIT = 7; // collapse long showtime lists behind a "+N" toggle
 const HIDDEN_KEY = "amc:hidden";
+const MONTH_SPAN = 28; // days in the rolling month grid (4 rows of 7); keep a multiple of 7
+const GEM_PREVIEW = 4; // gem titles shown per day cell before "+N more"
+
+type Mode = "week" | "month";
 
 function todayISO() {
   return DateTime.now().setZone(TZ).startOf("day").toISODate()!;
@@ -96,6 +100,7 @@ function Calendar() {
   );
   const [query, setQuery] = useState(() => params.get("q") ?? "");
   const [density, setDensity] = useState<Density>(() => (params.get("view") === "list" ? "list" : "compact"));
+  const [mode, setMode] = useState<Mode>(() => (params.get("mode") === "month" ? "month" : "week"));
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -104,6 +109,9 @@ function Calendar() {
   const [hidden, setHidden] = useState<Map<string, string>>(() => new Map());
   const [showHidden, setShowHidden] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
+
+  // Month grid is Sunday-aligned; the week view starts at the anchor as-is.
+  const gridStart = useMemo(() => startOfSundayWeek(weekStart), [weekStart]);
 
   // Load the dismissed-movie list once on the client (avoids SSR hydration mismatch).
   useEffect(() => setHidden(loadHidden()), []);
@@ -143,12 +151,15 @@ function Calendar() {
     if (selectedTheatres.length) p.set("th", selectedTheatres.join(","));
     if (debouncedQuery) p.set("q", debouncedQuery);
     if (density !== "compact") p.set("view", density);
+    if (mode !== "week") p.set("mode", mode);
     const qs = p.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  }, [weekStart, category, selectedTheatres, debouncedQuery, density, pathname, router]);
+  }, [weekStart, category, selectedTheatres, debouncedQuery, density, mode, pathname, router]);
 
   useEffect(() => {
-    const p = new URLSearchParams({ start: weekStart, days: "7", category });
+    const fetchStart = mode === "month" ? gridStart : weekStart;
+    const fetchDays = mode === "month" ? String(MONTH_SPAN) : "7";
+    const p = new URLSearchParams({ start: fetchStart, days: fetchDays, category });
     if (selectedTheatres.length) p.set("theatres", selectedTheatres.join(","));
     if (debouncedQuery) p.set("q", debouncedQuery);
     const ac = new AbortController();
@@ -167,7 +178,7 @@ function Calendar() {
         if (!ac.signal.aborted) setLoading(false);
       });
     return () => ac.abort();
-  }, [weekStart, category, selectedTheatres, debouncedQuery, reloadKey]);
+  }, [weekStart, gridStart, mode, category, selectedTheatres, debouncedQuery, reloadKey]);
 
   // Pin day headers just below the (variable-height) sticky bar.
   useEffect(() => {
@@ -199,6 +210,8 @@ function Calendar() {
 
   const navBtn =
     "rounded-full border border-line bg-surface px-3 py-1.5 text-sm text-ink-2 transition hover:border-line-2 hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+  const step = mode === "month" ? MONTH_SPAN : 7;
+  const rangeLabel = mode === "month" ? formatMonthRange(gridStart) : formatRange(weekStart);
 
   return (
     <>
@@ -212,13 +225,13 @@ function Calendar() {
               <button onClick={() => setWeekStart(todayISO())} className={navBtn}>
                 Today
               </button>
-              <button onClick={() => setWeekStart(shift(weekStart, -7))} aria-label="Previous week" className={navBtn}>
+              <button onClick={() => setWeekStart(shift(weekStart, -step))} aria-label="Previous" className={navBtn}>
                 ←
               </button>
-              <button onClick={() => setWeekStart(shift(weekStart, 7))} aria-label="Next week" className={navBtn}>
+              <button onClick={() => setWeekStart(shift(weekStart, step))} aria-label="Next" className={navBtn}>
                 →
               </button>
-              <span className="ml-1 text-sm font-medium text-ink-2">{formatRange(weekStart)}</span>
+              <span className="ml-1 text-sm font-medium text-ink-2">{rangeLabel}</span>
             </div>
 
             <div className="ml-auto flex items-center gap-2.5">
@@ -242,7 +255,8 @@ function Calendar() {
                   {hidden.size} hidden
                 </button>
               )}
-              <DensityToggle value={density} onChange={setDensity} />
+              {mode === "week" && <DensityToggle value={density} onChange={setDensity} />}
+              <ModeToggle value={mode} onChange={setMode} />
             </div>
           </div>
 
@@ -329,7 +343,7 @@ function Calendar() {
             </div>
           )}
 
-          {data && data.dayKeys.length > 0 && (
+          {mode === "week" && data && data.dayKeys.length > 0 && (
             <nav aria-label="Jump to day" className="flex gap-1 overflow-x-auto">
               {data.dayKeys.map((day) => {
                 const dt = DateTime.fromISO(day, { zone: TZ });
@@ -366,6 +380,15 @@ function Calendar() {
               Retry
             </button>
           </div>
+        ) : mode === "month" ? (
+          <MonthView
+            dayKeys={data?.dayKeys ?? []}
+            byDay={byDay}
+            onJumpToDay={(day) => {
+              setWeekStart(day);
+              setMode("week");
+            }}
+          />
         ) : (
           <div role="list" className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
             {(data?.dayKeys ?? []).map((day) => (
@@ -377,8 +400,8 @@ function Calendar() {
         {data && data.total === 0 && !error && (
           <p className="mt-10 text-center text-sm text-ink-3">
             {debouncedQuery
-              ? `No movies match “${debouncedQuery}” this week.`
-              : "No showtimes match these filters this week."}
+              ? `No movies match “${debouncedQuery}” ${mode === "month" ? "this month" : "this week"}.`
+              : `No showtimes match these filters ${mode === "month" ? "this month" : "this week"}.`}
           </p>
         )}
       </main>
@@ -406,6 +429,176 @@ function DensityToggle({ value, onChange }: { value: Density; onChange: (d: Dens
         </button>
       ))}
     </div>
+  );
+}
+
+function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => void }) {
+  const opts: { v: Mode; label: string }[] = [
+    { v: "week", label: "Week" },
+    { v: "month", label: "Month" },
+  ];
+  return (
+    <div role="group" aria-label="View span" className="flex items-center rounded-full border border-line p-0.5">
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          aria-pressed={value === o.v}
+          onClick={() => onChange(o.v)}
+          className={`rounded-full px-2.5 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+            value === o.v ? "bg-surface-3 text-ink" : "text-ink-3 hover:text-ink"
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+interface CellData {
+  day: string;
+  dt: DateTime;
+  total: number;
+  gems: MovieGroup[];
+  preview: string[];
+  moreGems: number;
+  isToday: boolean;
+  isPast: boolean;
+  empty: boolean;
+}
+
+function cellData(day: string, byDay: Record<string, MovieGroup[]>): CellData {
+  const groups = byDay[day] ?? [];
+  const gems = groups.filter((g) => g.isGem); // gems-first order preserved from groupByDay
+  const today = todayISO();
+  return {
+    day,
+    dt: DateTime.fromISO(day, { zone: TZ }),
+    total: groups.length,
+    gems,
+    preview: gems.slice(0, GEM_PREVIEW).map((g) => displayTitle(g.movie.title)),
+    moreGems: Math.max(0, gems.length - GEM_PREVIEW),
+    isToday: day === today,
+    isPast: day < today,
+    empty: groups.length === 0,
+  };
+}
+
+function MonthView({
+  dayKeys,
+  byDay,
+  onJumpToDay,
+}: {
+  dayKeys: string[];
+  byDay: Record<string, MovieGroup[]>;
+  onJumpToDay: (day: string) => void;
+}) {
+  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const cells = dayKeys.map((d) => cellData(d, byDay));
+  return (
+    <>
+      {/* Desktop / tablet: weekday-aligned 7-col grid */}
+      <div className="hidden sm:block">
+        <div className="grid grid-cols-7 gap-1.5 pb-1.5">
+          {weekdays.map((w) => (
+            <div
+              key={w}
+              className="px-1 text-center text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-3"
+            >
+              {w}
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7 gap-1.5">
+          {cells.map((c) => (
+            <MonthCell key={c.day} c={c} onJump={onJumpToDay} variant="grid" />
+          ))}
+        </div>
+      </div>
+      {/* Mobile: scrollable agenda list */}
+      <div className="flex flex-col gap-1.5 sm:hidden">
+        {cells.map((c) => (
+          <MonthCell key={c.day} c={c} onJump={onJumpToDay} variant="agenda" />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function MonthCell({
+  c,
+  onJump,
+  variant,
+}: {
+  c: CellData;
+  onJump: (day: string) => void;
+  variant: "grid" | "agenda";
+}) {
+  const stateCls = c.isToday
+    ? "border-accent/40 bg-surface-2 ring-1 ring-accent/20"
+    : c.empty
+      ? "border-line bg-surface opacity-50"
+      : c.gems.length
+        ? "border-gem/30 bg-gem/[0.04] hover:bg-gem/[0.07]"
+        : "border-line bg-surface hover:bg-surface-2";
+  const dateText = c.isToday ? "text-accent" : c.isPast ? "text-ink-3" : "text-ink";
+  const aria = `${c.dt.toFormat("cccc, LLLL d")}: ${c.total} ${c.total === 1 ? "movie" : "movies"}${
+    c.gems.length ? `, ${c.gems.length} highlighted` : ""
+  } — open week view`;
+
+  if (variant === "grid") {
+    return (
+      <button
+        type="button"
+        onClick={() => onJump(c.day)}
+        aria-label={aria}
+        className={`flex min-h-[7.5rem] flex-col gap-1 rounded-lg border p-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${stateCls}`}
+      >
+        <div className="flex items-baseline justify-between">
+          <span className={`text-sm font-semibold tabular-nums ${dateText}`}>{c.dt.toFormat("d")}</span>
+          {c.total > 0 && (
+            <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink-2">
+              {c.total}
+            </span>
+          )}
+        </div>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          {c.preview.map((t, i) => (
+            <span key={i} className="truncate text-[11px] leading-tight text-gem/90">
+              {t}
+            </span>
+          ))}
+          {c.moreGems > 0 && <span className="text-[10px] font-medium text-ink-3">+{c.moreGems} more</span>}
+        </div>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onJump(c.day)}
+      aria-label={aria}
+      className={`flex flex-col gap-1 rounded-lg border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${stateCls}`}
+    >
+      <div className="flex items-center justify-between">
+        <span className={`text-sm font-semibold ${dateText}`}>{c.dt.toFormat("ccc, LLL d")}</span>
+        <span className="text-xs text-ink-3">
+          {c.empty ? "No screenings" : `${c.total} ${c.total === 1 ? "movie" : "movies"}`}
+        </span>
+      </div>
+      {c.preview.length > 0 && (
+        <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+          {c.preview.map((t, i) => (
+            <span key={i} className="text-[12px] leading-tight text-gem/90">
+              {t}
+              {i < c.preview.length - 1 || c.moreGems > 0 ? " ·" : ""}
+            </span>
+          ))}
+          {c.moreGems > 0 && <span className="text-[11px] font-medium text-ink-3">+{c.moreGems} more</span>}
+        </div>
+      )}
+    </button>
   );
 }
 
@@ -823,5 +1016,17 @@ function shift(iso: string, days: number): string {
 function formatRange(startISO: string): string {
   const start = DateTime.fromISO(startISO, { zone: TZ });
   const end = start.plus({ days: 6 });
+  return `${start.toFormat("LLL d")} – ${end.toFormat("LLL d")}`;
+}
+
+// Sunday on or before the given date (Luxon's startOf("week") is Monday-based).
+function startOfSundayWeek(iso: string): string {
+  const dt = DateTime.fromISO(iso, { zone: TZ }).startOf("day");
+  return dt.minus({ days: dt.weekday % 7 }).toISODate()!; // weekday: 1=Mon…7=Sun → Sun→0
+}
+
+function formatMonthRange(gridStart: string): string {
+  const start = DateTime.fromISO(gridStart, { zone: TZ });
+  const end = start.plus({ days: MONTH_SPAN - 1 });
   return `${start.toFormat("LLL d")} – ${end.toFormat("LLL d")}`;
 }
