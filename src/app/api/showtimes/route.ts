@@ -8,6 +8,19 @@ import snapshot from "@/data/snapshot.json";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Public, unauthenticated showtimes — safe to allow any origin so the Chrome
+// new-tab dashboard (a chrome-extension:// origin) can fetch it cross-origin.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
 const RARE_THRESHOLD = 2;
 // A film in "wide rotation" (multiple showtimes per day) is easy to find in the
 // AMC app, so its throwback/indie/foreign *label* stays but it no longer counts
@@ -191,12 +204,15 @@ export async function GET(req: NextRequest) {
   const dayKeys: string[] = [];
   for (let i = 0; i < days; i++) dayKeys.push(start.plus({ days: i }).toISODate()!);
 
-  return NextResponse.json({
-    start: start.toISODate(),
-    days,
-    dayKeys,
-    theatres,
-    showtimes: filtered,
-    total: filtered.length,
-  });
+  return NextResponse.json(
+    {
+      start: start.toISODate(),
+      days,
+      dayKeys,
+      theatres,
+      showtimes: filtered,
+      total: filtered.length,
+    },
+    { headers: CORS_HEADERS },
+  );
 }
