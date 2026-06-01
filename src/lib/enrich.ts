@@ -87,6 +87,7 @@ export interface TmdbResult {
   tmdbId: number | null;
   year: number | null; // release year of the matched film — used to disambiguate Letterboxd
   title: string | null; // canonical title — used to build the Letterboxd slug
+  date: string | null; // full release_date (YYYY-MM-DD) — premiere vs re-screening signal
 }
 
 interface TmdbSearchResult {
@@ -158,7 +159,7 @@ export async function fetchTmdbPoster(
   opts: { apiKey?: string; signal?: AbortSignal; tmdbId?: number | null } = {},
 ): Promise<TmdbResult> {
   const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
-  const empty: TmdbResult = { posterUrl: null, tmdbId: null, year: null, title: null };
+  const empty: TmdbResult = { posterUrl: null, tmdbId: null, year: null, title: null, date: null };
   if (!apiKey) return empty;
   try {
     const signal = opts.signal ?? AbortSignal.timeout(8000);
@@ -168,11 +169,14 @@ export async function fetchTmdbPoster(
     if (!pick) pick = pickTmdbResult(await tmdbSearch(norm.query, apiKey, signal), norm);
     if (!pick) return empty;
     const y = pick.release_date ? parseInt(pick.release_date.slice(0, 4), 10) : NaN;
+    // Keep the full date only when it's a well-formed YYYY-MM-DD (TMDB can return "").
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(pick.release_date ?? "") ? pick.release_date! : null;
     return {
       posterUrl: pick.poster_path ? `${TMDB_IMG}${pick.poster_path}` : null,
       tmdbId: typeof pick.id === "number" ? pick.id : null,
       year: Number.isNaN(y) ? null : y,
       title: pick.title ?? null,
+      date,
     };
   } catch {
     return empty;
@@ -406,6 +410,8 @@ export async function enrichMovies(
           letterboxdRating: lb ? lb.rating : m.letterboxdRating,
           letterboxdUrl: lb ? lb.url : m.letterboxdUrl,
           releaseYear: year,
+          // Full theatrical date: coalesce so a transient TMDB null never clears it.
+          releaseDate: tmdb.date ? new Date(tmdb.date) : m.releaseDate,
           isClassic: cls.isClassic,
           isSpecialEvent: cls.isSpecialEvent,
           isIndie: cls.isIndie,

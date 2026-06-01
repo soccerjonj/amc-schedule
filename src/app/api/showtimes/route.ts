@@ -32,6 +32,8 @@ interface Row {
     isSpecialEvent: boolean;
     isIndie: boolean;
     isForeign: boolean;
+    // Date from the live DB, ISO string from the snapshot — normalized at output.
+    releaseDate: Date | string | null;
     posterUrl: string | null;
     letterboxdRating: number | null;
     letterboxdUrl: string | null;
@@ -85,7 +87,8 @@ async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug:
       movieId: s.movieId,
       format: s.format,
       ticketUrl: s.ticketUrl,
-      movie: s.movie,
+      // Older snapshots predate releaseDate — tolerate its absence.
+      movie: { ...s.movie, releaseDate: (s.movie as { releaseDate?: string | null }).releaseDate ?? null },
       theatre: { slug: s.theatre.slug, name: s.theatre.name },
     }));
   const theatres = snapshot.theatres
@@ -101,7 +104,8 @@ export async function GET(req: NextRequest) {
   const start = startParam
     ? DateTime.fromISO(startParam, { zone: THEATRE_TIMEZONE })
     : DateTime.now().setZone(THEATRE_TIMEZONE).startOf("day");
-  const days = Math.min(Math.max(parseInt(sp.get("days") ?? "7", 10) || 7, 1), 42);
+  // Cap at 92 so the Upcoming view can reach the full ~90-day scrape horizon.
+  const days = Math.min(Math.max(parseInt(sp.get("days") ?? "7", 10) || 7, 1), 92);
   const end = start.plus({ days });
 
   const theatreSlugs = (sp.get("theatres") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -153,6 +157,9 @@ export async function GET(req: NextRequest) {
         isIndie: r.movie.isIndie,
         isForeign: r.movie.isForeign,
         isRare,
+        releaseDate: r.movie.releaseDate
+          ? new Date(r.movie.releaseDate).toISOString().slice(0, 10)
+          : null,
         posterUrl: r.movie.posterUrl,
         letterboxdRating: r.movie.letterboxdRating,
         letterboxdUrl: r.movie.letterboxdUrl,

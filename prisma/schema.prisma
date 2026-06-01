@@ -36,6 +36,7 @@ model Movie {
   isIndie        Boolean    @default(false) // AMC Artisan Films
   isForeign      Boolean    @default(false) // International Films
   releaseYear    Int? // from TMDB; drives the "old film" => classic heuristic
+  releaseDate    DateTime? // full TMDB theatrical release date; distinguishes a true premiere from a repertory re-screening
   // Metadata enrichment (posters from TMDB, ratings scraped from Letterboxd).
   // Populated post-scrape by src/lib/enrich.ts; all best-effort / nullable.
   tmdbId            Int? // resolved TMDB movie id (search once, refetch by id later)

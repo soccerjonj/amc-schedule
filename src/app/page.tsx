@@ -15,6 +15,7 @@ interface Movie {
   isIndie: boolean;
   isForeign: boolean;
   isRare: boolean;
+  releaseDate: string | null; // TMDB theatrical date (YYYY-MM-DD); premiere vs re-screening
   posterUrl: string | null;
   letterboxdRating: number | null;
   letterboxdUrl: string | null;
@@ -63,8 +64,10 @@ const CHIP_LIMIT = 7; // collapse long showtime lists behind a "+N" toggle
 const HIDDEN_KEY = "amc:hidden";
 const MONTH_SPAN = 28; // days in the rolling month grid (4 rows of 7); keep a multiple of 7
 const GEM_PREVIEW = 4; // gem titles shown per day cell before "+N more"
+const UPCOMING_SPAN = 90; // days the Upcoming feed scans (the full scrape horizon)
+const RARE_DAYS = 3; // ≤ this many distinct play-dates across the horizon ⇒ rare (window-stable)
 
-type Mode = "week" | "month";
+type Mode = "week" | "month" | "upcoming";
 
 function todayISO() {
   return DateTime.now().setZone(TZ).startOf("day").toISODate()!;
@@ -100,7 +103,10 @@ function Calendar() {
   );
   const [query, setQuery] = useState(() => params.get("q") ?? "");
   const [density, setDensity] = useState<Density>(() => (params.get("view") === "list" ? "list" : "compact"));
-  const [mode, setMode] = useState<Mode>(() => (params.get("mode") === "month" ? "month" : "week"));
+  const [mode, setMode] = useState<Mode>(() => {
+    const m = params.get("mode");
+    return m === "month" || m === "upcoming" ? m : "week";
+  });
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -157,8 +163,10 @@ function Calendar() {
   }, [weekStart, category, selectedTheatres, debouncedQuery, density, mode, pathname, router]);
 
   useEffect(() => {
-    const fetchStart = mode === "month" ? gridStart : weekStart;
-    const fetchDays = mode === "month" ? String(MONTH_SPAN) : "7";
+    // Upcoming is always anchored at today over the full horizon; week/month follow the anchor.
+    const fetchStart = mode === "upcoming" ? todayISO() : mode === "month" ? gridStart : weekStart;
+    const fetchDays =
+      mode === "upcoming" ? String(UPCOMING_SPAN) : mode === "month" ? String(MONTH_SPAN) : "7";
     const p = new URLSearchParams({ start: fetchStart, days: fetchDays, category });
     if (selectedTheatres.length) p.set("theatres", selectedTheatres.join(","));
     if (debouncedQuery) p.set("q", debouncedQuery);
@@ -196,6 +204,10 @@ function Calendar() {
     [data, hidden],
   );
   const byDay = useMemo(() => groupByDay(visibleShowtimes), [visibleShowtimes]);
+  const upcomingBuckets = useMemo(
+    () => (mode === "upcoming" ? aggregateUpcoming(visibleShowtimes) : EMPTY_UPCOMING),
+    [mode, visibleShowtimes],
+  );
   const theatres = data?.theatres ?? [];
   const movieCount = useMemo(
     () => new Set(visibleShowtimes.map((s) => s.movie.id)).size,
@@ -221,18 +233,22 @@ function Calendar() {
             <h1 className="font-display text-xl font-semibold tracking-wide text-ink">
               AMC <span className="text-accent">Showtimes</span>
             </h1>
-            <div className="flex items-center gap-1.5">
-              <button onClick={() => setWeekStart(todayISO())} className={navBtn}>
-                Today
-              </button>
-              <button onClick={() => setWeekStart(shift(weekStart, -step))} aria-label="Previous" className={navBtn}>
-                ←
-              </button>
-              <button onClick={() => setWeekStart(shift(weekStart, step))} aria-label="Next" className={navBtn}>
-                →
-              </button>
-              <span className="ml-1 text-sm font-medium text-ink-2">{rangeLabel}</span>
-            </div>
+            {mode === "upcoming" ? (
+              <span className="ml-1 text-sm font-medium text-ink-2">Next 90 days</span>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <button onClick={() => setWeekStart(todayISO())} className={navBtn}>
+                  Today
+                </button>
+                <button onClick={() => setWeekStart(shift(weekStart, -step))} aria-label="Previous" className={navBtn}>
+                  ←
+                </button>
+                <button onClick={() => setWeekStart(shift(weekStart, step))} aria-label="Next" className={navBtn}>
+                  →
+                </button>
+                <span className="ml-1 text-sm font-medium text-ink-2">{rangeLabel}</span>
+              </div>
+            )}
 
             <div className="ml-auto flex items-center gap-2.5">
               <span className="text-xs text-ink-3" aria-live="polite">
@@ -380,6 +396,15 @@ function Calendar() {
               Retry
             </button>
           </div>
+        ) : mode === "upcoming" ? (
+          <UpcomingView
+            buckets={upcomingBuckets}
+            onJumpToDay={(day) => {
+              setWeekStart(day);
+              setMode("week");
+            }}
+            onHide={hideMovie}
+          />
         ) : mode === "month" ? (
           <MonthView
             dayKeys={data?.dayKeys ?? []}
@@ -397,7 +422,7 @@ function Calendar() {
           </div>
         )}
 
-        {data && data.total === 0 && !error && (
+        {data && data.total === 0 && !error && mode !== "upcoming" && (
           <p className="mt-10 text-center text-sm text-ink-3">
             {debouncedQuery
               ? `No movies match “${debouncedQuery}” ${mode === "month" ? "this month" : "this week"}.`
@@ -436,6 +461,7 @@ function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => v
   const opts: { v: Mode; label: string }[] = [
     { v: "week", label: "Week" },
     { v: "month", label: "Month" },
+    { v: "upcoming", label: "Upcoming" },
   ];
   return (
     <div role="group" aria-label="View span" className="flex items-center rounded-full border border-line p-0.5">
@@ -705,7 +731,6 @@ const MovieCard = memo(function MovieCard({
   const total = group.shows.length;
   const showGroups = expanded || total <= CHIP_LIMIT ? groups : trimGroups(groups, CHIP_LIMIT);
   const hidden = total - countShows(showGroups);
-  const worldCup = isWorldCup(movie.title);
   const title = displayTitle(movie.title);
 
   return (
@@ -716,27 +741,7 @@ const MovieCard = memo(function MovieCard({
           : "border-line hover:bg-surface-2"
       }`}
     >
-      {density !== "list" &&
-        (worldCup ? (
-          <WorldCupPoster />
-        ) : (
-          <div className="relative aspect-[2/3] w-10 flex-none self-start overflow-hidden rounded bg-surface-3">
-            {movie.posterUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={posterSrc(movie.posterUrl)}
-                alt=""
-                loading="lazy"
-                decoding="async"
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center">
-                <FilmIcon className="h-4 w-4 text-ink-3" />
-              </div>
-            )}
-          </div>
-        ))}
+      {density !== "list" && <Poster movie={movie} sizeCls="w-10" />}
 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-start gap-1.5">
@@ -961,12 +966,12 @@ function displayTitle(title: string): string {
 // bundled World Cup image cropped to its emblem (object-top, since the artwork
 // puts the emblem up top and text below); falls back to a soccer-ball tile if the
 // image isn't present.
-function WorldCupPoster() {
+function WorldCupPoster({ sizeCls = "w-10" }: { sizeCls?: string }) {
   const [imgOk, setImgOk] = useState(true);
   return (
     <div
       aria-hidden="true"
-      className="relative flex aspect-[2/3] w-10 flex-none self-start items-center justify-center overflow-hidden rounded bg-gradient-to-br from-emerald-700 to-sky-800"
+      className={`relative flex aspect-[2/3] ${sizeCls} flex-none self-start items-center justify-center overflow-hidden rounded bg-gradient-to-br from-emerald-700 to-sky-800`}
     >
       <svg viewBox="0 0 24 24" className="h-5 w-5 text-white/85" fill="none" stroke="currentColor" strokeWidth="1.4">
         <circle cx="12" cy="12" r="9" />
@@ -982,6 +987,30 @@ function WorldCupPoster() {
           onError={() => setImgOk(false)}
           className="absolute inset-0 h-full w-full bg-white object-cover object-top"
         />
+      )}
+    </div>
+  );
+}
+
+// Shared poster slot: World Cup tile, TMDB art, or a film-glyph placeholder.
+// `sizeCls` sets the width (e.g. "w-10" in day cards, "w-16" in the Upcoming feed).
+function Poster({ movie, sizeCls = "w-10" }: { movie: Movie; sizeCls?: string }) {
+  if (isWorldCup(movie.title)) return <WorldCupPoster sizeCls={sizeCls} />;
+  return (
+    <div className={`relative aspect-[2/3] ${sizeCls} flex-none self-start overflow-hidden rounded bg-surface-3`}>
+      {movie.posterUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={posterSrc(movie.posterUrl)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center">
+          <FilmIcon className="h-4 w-4 text-ink-3" />
+        </div>
       )}
     </div>
   );
@@ -1029,4 +1058,271 @@ function formatMonthRange(gridStart: string): string {
   const start = DateTime.fromISO(gridStart, { zone: TZ });
   const end = start.plus({ days: MONTH_SPAN - 1 });
   return `${start.toFormat("LLL d")} – ${end.toFormat("LLL d")}`;
+}
+
+// ---- Upcoming view ---------------------------------------------------------
+
+type UpcomingBucketKey = "opening" | "special" | "throwback" | "rare";
+
+interface UpcomingItem {
+  key: string;
+  movie: Movie; // representative film (poster/title/rating/badges)
+  title: string; // display title, or the series label for collapsed series
+  isSeries: boolean;
+  memberCount: number; // distinct films in a collapsed series (1 otherwise)
+  firstShowtime: string; // earliest startsAt (sort key)
+  firstDateKey: string;
+  lastDateKey: string;
+  playDates: string[]; // sorted distinct dateKeys across the horizon
+  theatres: { slug: string; name: string }[];
+  isOpening: boolean;
+  bucket: UpcomingBucketKey;
+}
+
+type UpcomingBuckets = Record<UpcomingBucketKey, UpcomingItem[]>;
+
+const EMPTY_UPCOMING: UpcomingBuckets = { opening: [], special: [], throwback: [], rare: [] };
+
+const UPCOMING_SECTIONS: { key: UpcomingBucketKey; label: string }[] = [
+  { key: "opening", label: "Opening soon" },
+  { key: "special", label: "Special events" },
+  { key: "throwback", label: "Throwbacks" },
+  { key: "rare", label: "Rare & indie" },
+];
+
+// Recurring broadcast/festival programs collapse into ONE feed entry — otherwise
+// e.g. ~63 FIFA World Cup match rows would bury every other highlight.
+const SERIES_PATTERNS: { key: string; label: string; re: RegExp }[] = [
+  { key: "fifa-world-cup", label: "FIFA World Cup 2026", re: WORLD_CUP_RE },
+  { key: "ghibli-fest", label: "Studio Ghibli Fest", re: /ghibli fest/i },
+  { key: "met-opera", label: "The Met: Live in HD", re: /met opera|the met: live/i },
+];
+
+function seriesOf(title: string): { key: string; label: string } | null {
+  for (const p of SERIES_PATTERNS) if (p.re.test(title)) return { key: p.key, label: p.label };
+  return null;
+}
+
+// A genuine future opening: the first AMC showtime is a future day AND (when the
+// theatrical date is known) it lines up with that date — an OLD release date with
+// future showtimes is a repertory re-screening, not an opening.
+function isOpeningItem(movie: Movie, firstDateKey: string, today: string): boolean {
+  if (firstDateKey <= today) return false;
+  // A film already tagged repertory/event is never a "new opening" — this keeps
+  // throwbacks (e.g. a 1960 re-screening) out of Opening even when releaseDate is
+  // missing (snapshot fallback), not just when the ±31-day date check can run.
+  if (movie.isClassic || movie.isSpecialEvent) return false;
+  if (!movie.releaseDate) return true;
+  const rel = DateTime.fromISO(movie.releaseDate, { zone: TZ });
+  const first = DateTime.fromISO(firstDateKey, { zone: TZ });
+  return Math.abs(first.diff(rel, "days").days) <= 31;
+}
+
+function aggregateUpcoming(shows: ApiShowtime[]): UpcomingBuckets {
+  const today = todayISO();
+  interface Entry {
+    rep: ApiShowtime;
+    movies: Set<string>;
+    dates: Set<string>;
+    theatres: Map<string, { slug: string; name: string }>;
+    first: string;
+    anyGem: boolean;
+    series: { key: string; label: string } | null;
+  }
+  const map = new Map<string, Entry>();
+  for (const s of shows) {
+    const series = seriesOf(s.movie.title);
+    const key = series ? series.key : s.movie.id;
+    let e = map.get(key);
+    if (!e) {
+      e = {
+        rep: s,
+        movies: new Set(),
+        dates: new Set(),
+        theatres: new Map(),
+        first: s.startsAt,
+        anyGem: false,
+        series,
+      };
+      map.set(key, e);
+    }
+    e.movies.add(s.movie.id);
+    if (s.dateKey) e.dates.add(s.dateKey);
+    e.theatres.set(s.theatre.slug, s.theatre);
+    if (s.startsAt < e.first) {
+      e.first = s.startsAt;
+      e.rep = s; // keep the earliest screening's film as representative
+    }
+    if (s.isGem) e.anyGem = true;
+  }
+
+  const buckets: UpcomingBuckets = { opening: [], special: [], throwback: [], rare: [] };
+  for (const [key, e] of map) {
+    const playDates = [...e.dates].sort();
+    if (playDates.length === 0) continue;
+    const movie = e.rep.movie;
+    const firstDateKey = playDates[0];
+    const isOpening = !e.series && isOpeningItem(movie, firstDateKey, today);
+    // Rarity is computed on distinct play-dates (window-stable), not the API's
+    // showtime-count isRare, which inflates over a 90-day window.
+    const isRareUpcoming = !e.series && playDates.length <= RARE_DAYS;
+    // Scope = gems + genuine openings. Drop wide mid-run releases that are neither.
+    const include =
+      isOpening ||
+      e.anyGem ||
+      !!e.series ||
+      movie.isClassic ||
+      movie.isSpecialEvent ||
+      movie.isIndie ||
+      movie.isForeign ||
+      isRareUpcoming;
+    if (!include) continue;
+
+    let bucket: UpcomingBucketKey;
+    if (isOpening) bucket = "opening";
+    else if (movie.isSpecialEvent) bucket = "special";
+    else if (movie.isClassic) bucket = "throwback";
+    else if (e.series) bucket = "special";
+    else bucket = "rare";
+
+    buckets[bucket].push({
+      key,
+      movie,
+      title: e.series ? e.series.label : displayTitle(movie.title),
+      isSeries: !!e.series,
+      memberCount: e.movies.size,
+      firstShowtime: e.first,
+      firstDateKey,
+      lastDateKey: playDates[playDates.length - 1],
+      playDates,
+      theatres: [...e.theatres.values()],
+      isOpening,
+      bucket,
+    });
+  }
+  for (const k of Object.keys(buckets) as UpcomingBucketKey[])
+    buckets[k].sort((a, b) => (a.firstShowtime < b.firstShowtime ? -1 : a.firstShowtime > b.firstShowtime ? 1 : 0));
+  return buckets;
+}
+
+function UpcomingView({
+  buckets,
+  onJumpToDay,
+  onHide,
+}: {
+  buckets: UpcomingBuckets;
+  onJumpToDay: (day: string) => void;
+  onHide: (id: string, title: string) => void;
+}) {
+  const sections = UPCOMING_SECTIONS.filter((s) => buckets[s.key].length > 0);
+  if (sections.length === 0) {
+    return (
+      <p className="mt-10 text-center text-sm text-ink-3">
+        No upcoming highlights in the next 90 days. Try clearing filters.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-7">
+      {sections.map((s) => (
+        <section key={s.key} aria-label={s.label}>
+          <h2 className="mb-2.5 flex items-baseline gap-2">
+            <span className="font-display text-base font-semibold uppercase tracking-[0.12em] text-ink">
+              {s.label}
+            </span>
+            <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink-2">
+              {buckets[s.key].length}
+            </span>
+          </h2>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {buckets[s.key].map((it) => (
+              <UpcomingItemCard key={it.key} item={it} onJump={onJumpToDay} onHide={onHide} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function UpcomingItemCard({
+  item,
+  onJump,
+  onHide,
+}: {
+  item: UpcomingItem;
+  onJump: (day: string) => void;
+  onHide: (id: string, title: string) => void;
+}) {
+  const { movie } = item;
+  const fmt = (iso: string) => DateTime.fromISO(iso, { zone: TZ }).toFormat("ccc, LLL d");
+  const range =
+    item.firstDateKey === item.lastDateKey ? fmt(item.firstDateKey) : `${fmt(item.firstDateKey)} – ${fmt(item.lastDateKey)}`;
+  const dateLine = item.isOpening ? `Opens ${fmt(item.firstDateKey)}` : `Next: ${fmt(item.firstDateKey)}`;
+  const playLine = item.isSeries
+    ? `${item.memberCount} ${item.memberCount === 1 ? "event" : "events"} · ${range}`
+    : item.playDates.length === 1
+      ? `One date · ${fmt(item.firstDateKey)}`
+      : `${item.playDates.length} dates · ${range}`;
+  const theatres = item.theatres.map((t) => theatreLabel(t.slug, t.name)).join(" · ");
+  const showRare = item.bucket === "rare" && !movie.isIndie && !movie.isForeign;
+  const hasBadges =
+    !item.isSeries && (movie.isClassic || movie.isSpecialEvent || movie.isIndie || movie.isForeign || showRare);
+
+  return (
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={() => onJump(item.firstDateKey)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onJump(item.firstDateKey);
+        }
+      }}
+      aria-label={`${item.title} — ${dateLine}. Open week view.`}
+      className="group relative flex cursor-pointer gap-2.5 rounded-lg border border-gem/25 bg-gem/[0.03] p-2 text-left transition hover:bg-gem/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <Poster movie={movie} sizeCls="w-16" />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex items-start gap-1.5">
+          <h3 className="min-w-0 flex-1 break-words text-sm font-semibold leading-tight text-ink">
+            {item.title}
+          </h3>
+          {(movie.letterboxdRating != null || movie.letterboxdUrl) && (
+            <span onClick={(e) => e.stopPropagation()}>
+              <RatingBadge movie={movie} />
+            </span>
+          )}
+        </div>
+        {hasBadges && (
+          <div className="flex flex-wrap gap-1">
+            {movie.isClassic && <Badge tone="classic">Throwback</Badge>}
+            {movie.isSpecialEvent && <Badge tone="special">Special</Badge>}
+            {movie.isIndie && <Badge tone="indie">Indie</Badge>}
+            {movie.isForeign && <Badge tone="foreign">Foreign</Badge>}
+            {showRare && <Badge tone="rare">Rare</Badge>}
+          </div>
+        )}
+        <p className={`text-xs font-semibold ${item.isOpening ? "text-accent" : "text-ink-2"}`}>{dateLine}</p>
+        <p className="text-[11px] text-ink-3">{playLine}</p>
+        {theatres && <p className="truncate text-[11px] text-ink-3">{theatres}</p>}
+      </div>
+      {!item.isSeries && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onHide(movie.id, item.title);
+          }}
+          aria-label={`Hide ${item.title}`}
+          title="Hide this movie"
+          className="absolute right-1 top-1 rounded p-0.5 text-ink-3 opacity-0 transition hover:bg-surface-3 hover:text-rose-300 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent group-hover:opacity-100"
+        >
+          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      )}
+    </article>
+  );
 }
