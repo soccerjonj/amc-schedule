@@ -39,6 +39,12 @@ const TRAILING_SUFFIXES =
   /\s*(\b\d{1,3}(st|nd|rd|th)\s+anniversary\b|\banniversary\b|\bencore\b|\bre-?release\b|\brestored\b|\brestoration\b|\bremastered\b|\bin\s+concert\b|\bsing-?along\b|\bdouble\s+feature\b|\bmarathon\b|\bdirector'?s\s+cut\b|\bextended\s+(edition|cut)\b|\bunrated\b|\bfan\s+first\s+premiere\b|\bsensory[\s-]?friendly(\s+screening)?\b|\bopen[\s-]?caption(ed)?\b|\bearly\s+access(\s+event)?\b|\bopening\s+night(\s+event)?\b|\badvance\s+screening\b|\bspecial\s+(engagement|screening)\b)\s*$/i;
 // Bracketed format tags anywhere in the title.
 const BRACKET_TAGS = /\s*[([](imax(\s*3d)?|3d|4k|70mm|dolby|dubbed|subtitled|sub|ov|omu)[)\]]/gi;
+// Words that mark a trailing parenthetical as an edition/event annotation (not part
+// of the film's real title): "(2026 Event)", "(Director's Cut)", "(Ghibli Fest 2026)".
+const PAREN_ANNOTATION =
+  /\b(?:event|re-?release|re-?issue|edition|anniversary|presentation|encore|restored|remastered|in\s+concert|sing-?along|director'?s\s+cut|fan\s+event|special\s+(?:event|engagement|screening)|fest(?:ival)?|ghibli)\b/i;
+// Matches a single trailing "(…)" / "[…]" group so it can be inspected and peeled.
+const TRAILING_PAREN = /\s*[([]([^)\]]*)[)\]]\s*$/;
 // A trailing " - <program>" segment AMC appends after the real title, e.g.
 // "Ponyo - Studio Ghibli Fest 2026" or "… - 20th Anniversary". Only strips when
 // the segment carries a program keyword (so real subtitles like "Mission:
@@ -53,15 +59,25 @@ export function normalizeTitle(raw: string): NormalizedTitle {
   const original = raw.trim();
   let s = original;
 
+  // Strip bracketed format tags first so a trailing edition/event paren sitting
+  // *before* a format tag (e.g. "… (2026 Event) (IMAX)") becomes the trailing group.
+  s = s.replace(BRACKET_TAGS, "").trim();
+
   let year: number | null = null;
-  const ym = s.match(/\s*\((\d{4})\)\s*$/);
-  if (ym) {
-    year = parseInt(ym[1], 10);
-    s = s.slice(0, ym.index).trim();
+  // Peel trailing parentheticals that are edition/event annotations — a bare
+  // "(YYYY)" or anything carrying a year or an annotation word like "(2026 Event)".
+  // Capture the year (often the re-release/event year) as a soft tiebreak. Stop at a
+  // paren that's part of the real title (e.g. "Birdman or (The Unexpected Virtue…)").
+  for (;;) {
+    const pm = s.match(TRAILING_PAREN);
+    if (!pm) break;
+    const ym = pm[1].match(/\b(\d{4})\b/);
+    if (!ym && !PAREN_ANNOTATION.test(pm[1])) break;
+    if (ym && year == null) year = parseInt(ym[1], 10);
+    s = s.slice(0, pm.index).trim();
   }
 
   s = s.replace(LEADING_PREFIXES, "").trim();
-  s = s.replace(BRACKET_TAGS, "").trim();
   s = s.replace(PROGRAM_SUFFIX, "").trim();
 
   let prev: string;
