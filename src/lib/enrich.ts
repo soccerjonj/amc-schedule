@@ -39,6 +39,12 @@ const TRAILING_SUFFIXES =
   /\s*(\b\d{1,3}(st|nd|rd|th)\s+anniversary\b|\banniversary\b|\bencore\b|\bre-?release\b|\brestored\b|\brestoration\b|\bremastered\b|\bin\s+concert\b|\bsing-?along\b|\bdouble\s+feature\b|\bmarathon\b|\bdirector'?s\s+cut\b|\bextended\s+(edition|cut)\b|\bunrated\b|\bfan\s+first\s+premiere\b|\bsensory[\s-]?friendly(\s+screening)?\b|\bopen[\s-]?caption(ed)?\b|\bearly\s+access(\s+event)?\b|\bopening\s+night(\s+event)?\b|\badvance\s+screening\b|\bspecial\s+(engagement|screening)\b)\s*$/i;
 // Bracketed format tags anywhere in the title.
 const BRACKET_TAGS = /\s*[([](imax(\s*3d)?|3d|4k|70mm|dolby|dubbed|subtitled|sub|ov|omu)[)\]]/gi;
+// A trailing " - <program>" segment AMC appends after the real title, e.g.
+// "Ponyo - Studio Ghibli Fest 2026" or "… - 20th Anniversary". Only strips when
+// the segment carries a program keyword (so real subtitles like "Mission:
+// Impossible - Dead Reckoning" are left alone), and won't cross another " - ".
+const PROGRAM_SUFFIX =
+  /\s+[-–—]\s+(?:(?!\s[-–—]\s).)*\b(?:fest(?:ival)?|anniversar(?:y|ies)|presents?|presenta|fathom|in\s+concert|world\s+tour|live\s+viewing|studio\s+ghibli|ghibli\s+fest|sing[-\s]?along|double\s+feature)\b.*$/i;
 // Strong "not a catalog film" markers.
 const EVENT_MARKERS =
   /\b(wwe|ufc|nxt|aew|wrestlemania|summerslam|royal\s+rumble|met\s+opera|metropolitan\s+opera|opera|ballet|in\s+concert|:\s*live)\b/i;
@@ -56,6 +62,7 @@ export function normalizeTitle(raw: string): NormalizedTitle {
 
   s = s.replace(LEADING_PREFIXES, "").trim();
   s = s.replace(BRACKET_TAGS, "").trim();
+  s = s.replace(PROGRAM_SUFFIX, "").trim();
 
   let prev: string;
   do {
@@ -79,6 +86,7 @@ export interface TmdbResult {
   posterUrl: string | null;
   tmdbId: number | null;
   year: number | null; // release year of the matched film — used to disambiguate Letterboxd
+  title: string | null; // canonical title — used to build the Letterboxd slug
 }
 
 interface TmdbSearchResult {
@@ -139,20 +147,22 @@ export async function fetchTmdbPoster(
   opts: { apiKey?: string; signal?: AbortSignal } = {},
 ): Promise<TmdbResult> {
   const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
-  if (!apiKey) return { posterUrl: null, tmdbId: null, year: null };
+  const empty: TmdbResult = { posterUrl: null, tmdbId: null, year: null, title: null };
+  if (!apiKey) return empty;
   try {
     const signal = opts.signal ?? AbortSignal.timeout(8000);
     const results = await tmdbSearch(norm.query, apiKey, signal);
     const pick = pickTmdbResult(results, norm);
-    if (!pick) return { posterUrl: null, tmdbId: null, year: null };
+    if (!pick) return empty;
     const y = pick.release_date ? parseInt(pick.release_date.slice(0, 4), 10) : NaN;
     return {
       posterUrl: pick.poster_path ? `${TMDB_IMG}${pick.poster_path}` : null,
       tmdbId: typeof pick.id === "number" ? pick.id : null,
       year: Number.isNaN(y) ? null : y,
+      title: pick.title ?? null,
     };
   } catch {
-    return { posterUrl: null, tmdbId: null, year: null };
+    return empty;
   }
 }
 
@@ -230,52 +240,43 @@ async function fetchFilmPage(
 
 // Resolves the correct Letterboxd film and returns its average rating. The bare
 // slug ("/film/passenger/") points at the canonical/oldest film of that title, so
-// for a new release ("Passenger" -> 1963) we use the target year (from the TMDB
-// match) to pick the year-suffixed slug Letterboxd uses to disambiguate. Network
-// errors propagate (the caller keeps any existing value); a definitive "no
-// right-year film" returns null so a wrong rating gets cleared rather than kept.
+// for a new release ("Passenger" -> 1963) the target year (from the TMDB match)
+// selects the year-suffixed slug Letterboxd uses to disambiguate. We also try a
+// slug built from TMDB's *canonical* title, since AMC's wording often differs
+// ("Ballad of Ricky Bobby" vs Letterboxd's "The Ballad of Ricky Bobby"). The
+// Letterboxd search endpoint is Cloudflare-gated, so slug guessing is all we have.
+// Network errors propagate (the caller keeps any existing value); a definitive
+// "no right-year film" returns null so a wrong rating is cleared rather than kept.
 export async function fetchLetterboxdRating(
   norm: NormalizedTitle,
-  opts: { signal?: AbortSignal; year?: number | null } = {},
+  opts: { signal?: AbortSignal; year?: number | null; altTitle?: string | null } = {},
 ): Promise<LetterboxdResult> {
-  const slug = slugify(norm.query);
-  if (!slug) return { rating: null, url: null };
   const sig = () => opts.signal ?? AbortSignal.timeout(8000);
   const target = opts.year ?? norm.year ?? null;
   const yearClose = (y: number | null) => target == null || y == null || Math.abs(y - target) <= 1;
 
-  const bareUrl = `${LB_BASE}/film/${slug}/`;
-  const bare = await fetchFilmPage(bareUrl, sig());
+  // Candidate base slugs: AMC's wording first, then TMDB's canonical title.
+  const bases = [...new Set([slugify(norm.query), opts.altTitle ? slugify(opts.altTitle) : ""])].filter(
+    Boolean,
+  );
+  if (!bases.length) return { rating: null, url: null };
 
-  // The bare slug is the right film when its year matches (or we have no year to
-  // check). Keep the URL even when there's no rating yet (unreleased films have a
-  // page but no aggregateRating), so users can still click through.
-  if (bare.status === 200 && yearClose(bare.year)) {
-    return { rating: bare.rating, url: bareUrl };
-  }
-
-  // Otherwise the bare slug is a different-year film. Try the year-suffixed slugs
-  // around the target (Letterboxd's slug year can be off by one from the US
-  // release). Prefer a rated year-match; fall back to a year-matching page without
-  // a rating so we can still link to it.
-  if (target != null) {
-    let fallbackUrl: string | null = null;
-    for (const y of [target, target - 1, target + 1]) {
-      const altUrl = `${LB_BASE}/film/${slug}-${y}/`;
-      const alt = await fetchFilmPage(altUrl, sig());
-      if (alt.status === 200 && yearClose(alt.year)) {
-        if (alt.rating != null) return { rating: alt.rating, url: altUrl };
-        fallbackUrl ??= altUrl;
+  let fallbackUrl: string | null = null; // a year-matching page that just has no rating yet
+  for (const base of bases) {
+    const candidates = [`${LB_BASE}/film/${base}/`];
+    if (target != null) {
+      for (const y of [target, target - 1, target + 1]) candidates.push(`${LB_BASE}/film/${base}-${y}/`);
+    }
+    for (const url of candidates) {
+      const page = await fetchFilmPage(url, sig());
+      if (page.status === 200 && yearClose(page.year)) {
+        if (page.rating != null) return { rating: page.rating, url };
+        fallbackUrl ??= url;
       }
     }
-    return { rating: null, url: fallbackUrl };
   }
 
-  // No year signal at all: fall back to the bare film if it exists.
-  if (bare.status === 200) {
-    return { rating: bare.rating, url: bareUrl };
-  }
-  return { rating: null, url: null };
+  return { rating: null, url: fallbackUrl };
 }
 
 export interface EnrichStats {
@@ -350,7 +351,7 @@ export async function enrichMovies(
       const tmdb = await fetchTmdbPoster(norm, { apiKey });
       let lb: LetterboxdResult | null = null;
       try {
-        lb = await fetchLetterboxdRating(norm, { year: tmdb.year ?? norm.year });
+        lb = await fetchLetterboxdRating(norm, { year: tmdb.year ?? norm.year, altTitle: tmdb.title });
       } catch {
         lb = null; // network failure — keep any existing rating
       }
