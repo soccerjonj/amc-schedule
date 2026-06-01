@@ -6,13 +6,13 @@ name: Scrape AMC showtimes
 # string (postgresql://...). Trigger manually from the Actions tab via run-workflow.
 on:
   schedule:
-    - cron: "0 */6 * * *" # every 6 hours (UTC)
+    - cron: "0 9 * * *" # once a day, 09:00 UTC (~4am Chicago)
   workflow_dispatch:
     inputs:
       days:
         description: "Days ahead to scrape"
         required: false
-        default: "50"
+        default: "90"
       force:
         description: "Force re-enrich all movies (ignore staleness)"
         required: false
@@ -56,7 +56,7 @@ jobs:
       - name: Scrape
         env:
           ENRICH_FORCE: ${{ github.event.inputs.force }}
-        run: npm run scrape -- --days "${{ github.event.inputs.days || '50' }}"
+        run: npm run scrape -- --days "${{ github.event.inputs.days || '90' }}"
 
       # Keep the bundled fallback (served when DATABASE_URL is unset) in sync with
       # the freshly-scraped DB. [skip ci] avoids triggering a Vercel redeploy,

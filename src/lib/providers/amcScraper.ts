@@ -60,9 +60,27 @@ export class AmcScraperProvider implements ShowtimeProvider {
     const page = await this.ctx.newPage();
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-      // allow Cloudflare / waiting room to clear and SSR content to settle
-      await page.waitForSelector('a[href^="/showtimes/"]', { timeout: 25000 }).catch(() => {});
-      await page.waitForTimeout(1500);
+      // The real showtimes page (past Cloudflare's waiting room) is ready when its
+      // <h1> reads "Showtimes" — present on both populated AND empty days.
+      await page
+        .waitForFunction(() => document.querySelector("h1")?.textContent?.trim() === "Showtimes", {
+          timeout: 30000,
+        })
+        .catch(() => {});
+      // Showtimes are server-rendered. Empty days say so explicitly — skip the
+      // anchor wait there so far-out, mostly-empty dates return in ~2s instead of
+      // timing out (~25s). Populated days have their anchors immediately.
+      const noShowtimes = await page
+        .evaluate(() =>
+          /there are no showtimes|no showtimes are available|aren'?t any showtimes|no showtimes/i.test(
+            document.body.innerText,
+          ),
+        )
+        .catch(() => false);
+      if (!noShowtimes) {
+        await page.waitForSelector('a[href^="/showtimes/"]', { timeout: 6000 }).catch(() => {});
+      }
+      await page.waitForTimeout(500);
 
       const dom: DomShowtime[] = await page.evaluate(() => {
         const movieMap: Record<string, string> = {};
