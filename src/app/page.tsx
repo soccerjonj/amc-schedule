@@ -842,19 +842,24 @@ const UPCOMING_SECTIONS: { key: UpcomingBucketKey; label: string }[] = [
   { key: "rare", label: "Rare & indie" },
 ];
 
-// A genuine future opening: the first AMC showtime is a future day AND (when the
-// theatrical date is known) it lines up with that date — an OLD release date with
-// future showtimes is a repertory re-screening, not an opening.
+const OPENING_GRACE_DAYS = 7; // a release within the last week still counts as "just opened"
+// Accessibility / one-off special screenings of a film (its main title already carries
+// the opening) — never an "opening" themselves, regardless of the film's release date.
+const SPECIAL_SCREENING_RE = /\b(sensory[\s-]?friendly|open[\s-]?caption(?:ed)?)\b/i;
+
+// A genuine opening: its first upcoming showtime is in the future AND its theatrical
+// release is upcoming or only days old. A film whose release is already weeks past is
+// out — a gap in its schedule (only a future sensory-friendly screening, or simply no
+// showtime literally today) must NOT make it look like it's opening tomorrow.
 function isOpeningItem(movie: Movie, firstDateKey: string, today: string): boolean {
-  if (firstDateKey <= today) return false;
-  // A film already tagged repertory/event is never a "new opening" — this keeps
-  // throwbacks (e.g. a 1960 re-screening) out of Opening even when releaseDate is
-  // missing (snapshot fallback), not just when the ±31-day date check can run.
-  if (movie.isClassic || movie.isSpecialEvent) return false;
-  if (!movie.releaseDate) return true;
-  const rel = DateTime.fromISO(movie.releaseDate, { zone: TZ });
-  const first = DateTime.fromISO(firstDateKey, { zone: TZ });
-  return Math.abs(first.diff(rel, "days").days) <= 31;
+  if (firstDateKey <= today) return false; // its next/first showtime must be upcoming
+  if (movie.isClassic || movie.isSpecialEvent) return false; // repertory/events aren't openings
+  if (SPECIAL_SCREENING_RE.test(movie.title)) return false; // accessibility one-offs aren't openings
+  // Require the real release date — without it we can't tell a premiere from a film
+  // that's already been running, so don't claim "opening" (it still shows under Rare/
+  // Indie/Foreign if it qualifies).
+  if (!movie.releaseDate) return false;
+  return movie.releaseDate.slice(0, 10) >= shift(today, -OPENING_GRACE_DAYS);
 }
 
 function aggregateUpcoming(shows: ApiShowtime[]): UpcomingBuckets {
