@@ -60,6 +60,20 @@ export function theatreLabel(slug: string, fallback: string): string {
   return THEATRE_LABEL[slug] ?? fallback;
 }
 
+// Fixed display order for theatre groups within a card (River East first, etc.).
+const THEATRE_ORDER = [
+  "amc-river-east-21",
+  "amc-600-north-michigan-9",
+  "amc-dine-in-block-37",
+  "amc-roosevelt-collection-16",
+  "amc-newcity-14",
+];
+
+function theatreRank(slug: string): number {
+  const i = THEATRE_ORDER.indexOf(slug);
+  return i === -1 ? THEATRE_ORDER.length : i; // unknown theatres sort last
+}
+
 // "7:00 PM" -> "7p", "7:30 PM" -> "7:30p", "11:30 AM" -> "11:30a".
 export function compactTime(t: string): string {
   const m = t.match(/^(\d{1,2}):(\d{2})\s*([AP])M$/i);
@@ -160,6 +174,11 @@ export function groupShowtimes(shows: ApiShowtime[]): ShowGroup[] {
     const ca = isCaptionTag(a.tag) ? 1 : 0;
     const cb = isCaptionTag(b.tag) ? 1 : 0;
     if (ca !== cb) return ca - cb;
+    // Then a fixed theatre order (River East, 600 N Mich, Block 37, Roosevelt, NewCity).
+    const ra = theatreRank(a.theatre.slug);
+    const rb = theatreRank(b.theatre.slug);
+    if (ra !== rb) return ra - rb;
+    // Within the same theatre, earliest showtime first.
     return a.shows[0].startsAt < b.shows[0].startsAt ? -1 : 1;
   });
   return groups;
