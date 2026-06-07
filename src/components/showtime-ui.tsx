@@ -168,7 +168,7 @@ export function TimeChip({
       target="_blank"
       rel="noopener noreferrer"
       aria-label={label}
-      className="inline-flex min-h-[34px] items-center rounded border border-line bg-surface-3 px-2 py-1 text-[11px] font-medium tabular-nums leading-none text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="inline-flex items-center rounded border border-line bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       {compactTime(s.time)}
     </a>
