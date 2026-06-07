@@ -15,6 +15,7 @@ import {
   displayTitle,
   seriesOf,
   groupShowtimes,
+  isCaptionTag,
   Poster,
   RatingBadge,
   Badge,
@@ -749,7 +750,7 @@ const MovieCard = memo(function MovieCard({
             <div key={g.key} className="flex flex-wrap items-center gap-1">
               <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-[0.03em] text-ink-3">
                 {theatreLabel(g.theatre.slug, g.theatre.name)}
-                {g.tag && <span className="text-accent"> {g.tag}</span>}
+                {g.tag && <span className={isCaptionTag(g.tag) ? "" : "text-accent"}> {g.tag}</span>}
               </span>
               {g.shows.map((s) => (
                 <TimeChip key={s.id} s={s} movieTitle={title} dayLabel={dayLabel} />

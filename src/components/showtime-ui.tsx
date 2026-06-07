@@ -72,16 +72,33 @@ export function compactTime(t: string): string {
 }
 
 // AMC's format strings are messy ("IMAX with Laser at AMC", "PRIME at AMC",
-// "RealD 3D", language/caption variants), so match by substring.
+// "70mm", "XL at AMC", "Open Caption (On-screen Subtitles)"…), so match by
+// substring. Premium presentation formats get a highlighted tag; accessibility /
+// language variants get a muted tag and sort last (see groupShowtimes); plain
+// "Digital"/"Dine-In…" stay untagged (standard).
 export function formatTag(format: string | null): string | null {
   if (!format) return null;
   const f = format.toLowerCase();
   if (f.includes("imax")) return "IMAX";
+  if (f.includes("70mm")) return "70mm";
   if (f.includes("dolby")) return "Dolby";
   if (f.includes("prime")) return "Prime";
   if (f.includes("laser")) return "Laser";
+  if (/\bxl\b/.test(f)) return "XL";
   if (f.includes("3d")) return "3D";
+  // Accessibility / language presentations — labeled but de-emphasized.
+  if (f.includes("open caption")) return "Open Caption";
+  if (f.includes("subtitle")) return "Subtitled";
+  if (f.includes("dubbed")) return "Dubbed";
   return null;
+}
+
+const CAPTION_TAGS = new Set(["Open Caption", "Subtitled", "Dubbed"]);
+
+// Caption/subtitle/dubbed variants are accessibility/language presentations: we
+// label them but render them muted and push them after the regular showtimes.
+export function isCaptionTag(tag: string | null): boolean {
+  return tag != null && CAPTION_TAGS.has(tag);
 }
 
 // Posters render small; w185 is plenty and far lighter than the stored w342.
@@ -139,7 +156,13 @@ export function groupShowtimes(shows: ApiShowtime[]): ShowGroup[] {
   }
   const groups = [...map.values()];
   for (const g of groups) g.shows.sort((a, b) => (a.startsAt < b.startsAt ? -1 : 1));
-  groups.sort((a, b) => (a.shows[0].startsAt < b.shows[0].startsAt ? -1 : 1));
+  groups.sort((a, b) => {
+    // Caption/subtitle/dubbed groups always come after the regular ones.
+    const ca = isCaptionTag(a.tag) ? 1 : 0;
+    const cb = isCaptionTag(b.tag) ? 1 : 0;
+    if (ca !== cb) return ca - cb;
+    return a.shows[0].startsAt < b.shows[0].startsAt ? -1 : 1;
+  });
   return groups;
 }
 
