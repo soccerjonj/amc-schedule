@@ -3,6 +3,7 @@ import { DateTime } from "luxon";
 import { prisma } from "@/lib/db";
 import { isHiddenTitle } from "@/lib/classify";
 import { THEATRE_TIMEZONE } from "@/lib/theatres";
+import { formatTag, seriesOf } from "@/lib/showtimes";
 import snapshot from "@/data/snapshot.json";
 
 export const runtime = "nodejs";
@@ -47,6 +48,8 @@ interface Row {
     isForeign: boolean;
     // Date from the live DB, ISO string from the snapshot — normalized at output.
     releaseDate: Date | string | null;
+    rating: string | null; // MPAA, e.g. "PG-13"
+    runtimeMinutes: number | null;
     posterUrl: string | null;
     letterboxdRating: number | null;
     letterboxdUrl: string | null;
@@ -58,7 +61,6 @@ interface LoadParams {
   start: Date;
   end: Date;
   theatreSlugs: string[];
-  q: string;
   movieId: string; // when set, restrict to a single movie (detail page)
 }
 
@@ -67,15 +69,12 @@ interface LoadParams {
 // before any database is provisioned — set DATABASE_URL later to go live.
 async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug: string; name: string }[] }> {
   if (process.env.DATABASE_URL) {
-    // Postgres `contains` is case-sensitive and needs an explicit mode that
-    // SQLite rejects, so only set it on Postgres.
-    const isPg = /^postgres(ql)?:\/\//.test(process.env.DATABASE_URL);
-    const titleFilter = isPg ? { contains: p.q, mode: "insensitive" as const } : { contains: p.q };
+    // Text/format search is applied uniformly in JS after load (see GET) so it can
+    // match formats and series labels, not just titles.
     const rows = await prisma.showtime.findMany({
       where: {
         startsAt: { gte: p.start, lt: p.end },
         theatre: { active: true, ...(p.theatreSlugs.length ? { slug: { in: p.theatreSlugs } } : {}) },
-        ...(p.q ? { movie: { title: titleFilter } } : {}),
         ...(p.movieId ? { movieId: p.movieId } : {}),
       },
       include: { movie: true, theatre: true },
@@ -89,12 +88,10 @@ async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug:
     return { rows, theatres };
   }
 
-  const ql = p.q.toLowerCase();
   const rows: Row[] = snapshot.showtimes
     .map((s) => ({ ...s, startsAt: new Date(s.startsAt) }))
     .filter((s) => s.startsAt >= p.start && s.startsAt < p.end)
     .filter((s) => s.theatre.active && (!p.theatreSlugs.length || p.theatreSlugs.includes(s.theatre.slug)))
-    .filter((s) => !ql || s.movie.title.toLowerCase().includes(ql))
     .filter((s) => !p.movieId || s.movieId === p.movieId)
     .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
     .map((s) => ({
@@ -103,8 +100,13 @@ async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug:
       movieId: s.movieId,
       format: s.format,
       ticketUrl: s.ticketUrl,
-      // Older snapshots predate releaseDate — tolerate its absence.
-      movie: { ...s.movie, releaseDate: (s.movie as { releaseDate?: string | null }).releaseDate ?? null },
+      // Older snapshots predate some fields — tolerate their absence.
+      movie: {
+        ...s.movie,
+        releaseDate: (s.movie as { releaseDate?: string | null }).releaseDate ?? null,
+        rating: (s.movie as { rating?: string | null }).rating ?? null,
+        runtimeMinutes: (s.movie as { runtimeMinutes?: number | null }).runtimeMinutes ?? null,
+      },
       theatre: { slug: s.theatre.slug, name: s.theatre.name },
     }));
   const theatres = snapshot.theatres
@@ -125,7 +127,8 @@ export async function GET(req: NextRequest) {
   const end = start.plus({ days });
 
   const theatreSlugs = (sp.get("theatres") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  const q = (sp.get("q") ?? "").trim();
+  const q = (sp.get("q") ?? "").trim().toLowerCase();
+  const fmt = new Set((sp.get("fmt") ?? "").split(",").map((s) => s.trim()).filter(Boolean));
   const movieId = (sp.get("movieId") ?? "").trim();
   const category = (sp.get("category") ?? "all").toLowerCase();
 
@@ -133,7 +136,6 @@ export async function GET(req: NextRequest) {
     start: start.toJSDate(),
     end: end.toJSDate(),
     theatreSlugs,
-    q,
     movieId,
   });
   const theatres = loaded.theatres;
@@ -178,6 +180,8 @@ export async function GET(req: NextRequest) {
         releaseDate: r.movie.releaseDate
           ? new Date(r.movie.releaseDate).toISOString().slice(0, 10)
           : null,
+        rating: r.movie.rating,
+        runtimeMinutes: r.movie.runtimeMinutes,
         posterUrl: r.movie.posterUrl,
         letterboxdRating: r.movie.letterboxdRating,
         letterboxdUrl: r.movie.letterboxdUrl,
@@ -194,10 +198,18 @@ export async function GET(req: NextRequest) {
     };
   });
 
+  // Category, format and text filters are applied AFTER rareness/gem are computed,
+  // so narrowing the view never changes a film's gem/rare status.
   const filtered = enriched.filter((r) => {
-    if (category === "classic") return r.movie.isClassic;
-    if (category === "special") return r.movie.isSpecialEvent;
-    if (category === "gems") return r.isGem;
+    if (category === "classic" && !r.movie.isClassic) return false;
+    if (category === "special" && !r.movie.isSpecialEvent) return false;
+    if (category === "gems" && !r.isGem) return false;
+    if (fmt.size && !fmt.has(formatTag(r.format) ?? "")) return false;
+    if (q) {
+      const series = seriesOf(r.movie.title);
+      const hay = `${r.movie.title} ${r.format ?? ""} ${formatTag(r.format) ?? ""} ${series?.label ?? ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 

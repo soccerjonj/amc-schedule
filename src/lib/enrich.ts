@@ -104,6 +104,8 @@ export interface TmdbResult {
   year: number | null; // release year of the matched film — used to disambiguate Letterboxd
   title: string | null; // canonical title — used to build the Letterboxd slug
   date: string | null; // full release_date (YYYY-MM-DD) — premiere vs re-screening signal
+  runtime: number | null; // minutes, from the TMDB movie detail
+  cert: string | null; // US MPAA certification, e.g. "PG-13"
 }
 
 interface TmdbSearchResult {
@@ -111,6 +113,21 @@ interface TmdbSearchResult {
   title?: string;
   poster_path?: string | null;
   release_date?: string;
+}
+
+// The /movie/{id} detail (with append_to_response=release_dates) adds runtime + certs.
+interface TmdbDetail extends TmdbSearchResult {
+  runtime?: number;
+  release_dates?: {
+    results?: Array<{ iso_3166_1?: string; release_dates?: Array<{ certification?: string }> }>;
+  };
+}
+
+// Pull the US MPAA certification (e.g. "PG-13") out of the release_dates payload.
+function usCert(d: TmdbDetail | undefined): string | null {
+  const us = d?.release_dates?.results?.find((r) => r.iso_3166_1 === "US");
+  const cert = us?.release_dates?.map((x) => x.certification).find((c) => !!c && c.trim() !== "");
+  return cert ? cert.trim() : null;
 }
 
 // TMDB search is popularity-ranked, so for a low-popularity (often unreleased)
@@ -163,10 +180,13 @@ async function tmdbGetById(
   id: number,
   apiKey: string,
   signal: AbortSignal,
-): Promise<TmdbSearchResult | undefined> {
-  const res = await fetch(`${TMDB_BASE}/movie/${id}?api_key=${apiKey}`, { signal });
+): Promise<TmdbDetail | undefined> {
+  const res = await fetch(
+    `${TMDB_BASE}/movie/${id}?api_key=${apiKey}&append_to_response=release_dates`,
+    { signal },
+  );
   if (!res.ok) return undefined;
-  const m = (await res.json()) as TmdbSearchResult;
+  const m = (await res.json()) as TmdbDetail;
   return typeof m.id === "number" ? m : undefined;
 }
 
@@ -175,14 +195,20 @@ export async function fetchTmdbPoster(
   opts: { apiKey?: string; signal?: AbortSignal; tmdbId?: number | null } = {},
 ): Promise<TmdbResult> {
   const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
-  const empty: TmdbResult = { posterUrl: null, tmdbId: null, year: null, title: null, date: null };
+  const empty: TmdbResult = {
+    posterUrl: null, tmdbId: null, year: null, title: null, date: null, runtime: null, cert: null,
+  };
   if (!apiKey) return empty;
   try {
     const signal = opts.signal ?? AbortSignal.timeout(8000);
-    // Already-resolved movies: fetch by id (1 request, no re-matching). Fall back
-    // to a fresh text search if there's no id yet or the id lookup fails.
+    // Already-resolved movies: fetch by id (1 request, no re-matching). Otherwise
+    // search, then fetch the matched id's detail so we get runtime + certification
+    // (search results don't include those).
     let pick = opts.tmdbId ? await tmdbGetById(opts.tmdbId, apiKey, signal) : undefined;
-    if (!pick) pick = pickTmdbResult(await tmdbSearch(norm.query, apiKey, signal), norm);
+    if (!pick) {
+      const found = pickTmdbResult(await tmdbSearch(norm.query, apiKey, signal), norm);
+      pick = found?.id ? ((await tmdbGetById(found.id, apiKey, signal)) ?? found) : found;
+    }
     if (!pick) return empty;
     const y = pick.release_date ? parseInt(pick.release_date.slice(0, 4), 10) : NaN;
     // Keep the full date only when it's a well-formed YYYY-MM-DD (TMDB can return "").
@@ -193,6 +219,8 @@ export async function fetchTmdbPoster(
       year: Number.isNaN(y) ? null : y,
       title: pick.title ?? null,
       date,
+      runtime: typeof pick.runtime === "number" && pick.runtime > 0 ? pick.runtime : null,
+      cert: usCert(pick),
     };
   } catch {
     return empty;
@@ -428,6 +456,9 @@ export async function enrichMovies(
           releaseYear: year,
           // Full theatrical date: coalesce so a transient TMDB null never clears it.
           releaseDate: tmdb.date ? new Date(tmdb.date) : m.releaseDate,
+          // Runtime + MPAA cert from TMDB (coalesced).
+          runtimeMinutes: tmdb.runtime ?? m.runtimeMinutes,
+          rating: tmdb.cert ?? m.rating,
           isClassic: cls.isClassic,
           isSpecialEvent: cls.isSpecialEvent,
           isIndie: cls.isIndie,

@@ -1,170 +1,21 @@
 "use client";
 
-// Shared types, helpers, and presentational components used by the calendar
-// (src/app/page.tsx) and the movie/series detail pages. Keeping them here avoids
-// divergence between the day-grid cards and the detail views.
+// Presentational components for showtimes. Pure helpers + types live in
+// src/lib/showtimes.ts (server-safe); we re-export them here so existing imports
+// from "@/components/showtime-ui" keep working unchanged.
 
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { DateTime } from "luxon";
+import {
+  type Movie,
+  formatTag,
+  isWorldCup,
+  posterSrc,
+  compactTime,
+  type ApiShowtime,
+} from "@/lib/showtimes";
 
-export const TZ = "America/Chicago";
-
-export interface Movie {
-  id: string;
-  title: string;
-  slug: string;
-  isClassic: boolean;
-  isSpecialEvent: boolean;
-  isIndie: boolean;
-  isForeign: boolean;
-  isRare: boolean;
-  releaseDate: string | null; // TMDB theatrical date (YYYY-MM-DD); premiere vs re-screening
-  posterUrl: string | null;
-  letterboxdRating: number | null;
-  letterboxdUrl: string | null;
-}
-
-export interface ApiShowtime {
-  id: string;
-  startsAt: string;
-  dateKey: string;
-  time: string;
-  format: string | null;
-  ticketUrl: string;
-  movie: Movie;
-  theatre: { slug: string; name: string };
-  isGem: boolean;
-}
-
-export interface ApiResponse {
-  start: string;
-  days: number;
-  dayKeys: string[];
-  theatres: { slug: string; name: string }[];
-  showtimes: ApiShowtime[];
-  total: number;
-}
-
-export function todayISO() {
-  return DateTime.now().setZone(TZ).startOf("day").toISODate()!;
-}
-
-const THEATRE_LABEL: Record<string, string> = {
-  "amc-river-east-21": "River East",
-  "amc-600-north-michigan-9": "600 N Mich",
-  "amc-newcity-14": "NewCity",
-  "amc-dine-in-block-37": "Block 37",
-  "amc-roosevelt-collection-16": "Roosevelt",
-};
-
-export function theatreLabel(slug: string, fallback: string): string {
-  return THEATRE_LABEL[slug] ?? fallback;
-}
-
-// "7:00 PM" -> "7p", "7:30 PM" -> "7:30p", "11:30 AM" -> "11:30a".
-export function compactTime(t: string): string {
-  const m = t.match(/^(\d{1,2}):(\d{2})\s*([AP])M$/i);
-  if (!m) return t;
-  const [, h, min, ap] = m;
-  const suffix = ap.toLowerCase();
-  return min === "00" ? `${h}${suffix}` : `${h}:${min}${suffix}`;
-}
-
-// AMC's format strings are messy ("IMAX with Laser at AMC", "PRIME at AMC",
-// "70mm", "XL at AMC", "Open Caption (On-screen Subtitles)"…), so match by
-// substring. Premium presentation formats get a highlighted tag; accessibility /
-// language variants get a muted tag and sort last (see groupShowtimes); plain
-// "Digital"/"Dine-In…" stay untagged (standard).
-export function formatTag(format: string | null): string | null {
-  if (!format) return null;
-  const f = format.toLowerCase();
-  if (f.includes("imax")) return "IMAX";
-  if (f.includes("70mm")) return "70mm";
-  if (f.includes("dolby")) return "Dolby";
-  if (f.includes("prime")) return "Prime";
-  if (f.includes("laser")) return "Laser";
-  if (/\bxl\b/.test(f)) return "XL";
-  if (f.includes("3d")) return "3D";
-  // Accessibility / language presentations — labeled but de-emphasized.
-  if (f.includes("open caption")) return "Open Caption";
-  if (f.includes("subtitle")) return "Subtitled";
-  if (f.includes("dubbed")) return "Dubbed";
-  return null;
-}
-
-const CAPTION_TAGS = new Set(["Open Caption", "Subtitled", "Dubbed"]);
-
-// Caption/subtitle/dubbed variants are accessibility/language presentations: we
-// label them but render them muted and push them after the regular showtimes.
-export function isCaptionTag(tag: string | null): boolean {
-  return tag != null && CAPTION_TAGS.has(tag);
-}
-
-// Posters render small; w185 is plenty and far lighter than the stored w342.
-export function posterSrc(url: string): string {
-  return url.replace(/\/w\d+\//, "/w185/");
-}
-
-export const WORLD_CUP_RE = /copa mundial de la fifa|fifa world cup/i;
-
-export function isWorldCup(title: string): boolean {
-  return WORLD_CUP_RE.test(title);
-}
-
-// FIFA broadcasts come as "México vs. Sudáfrica - Telemundo presenta la Copa
-// Mundial de la FIFA 2026" — trim to just the matchup before the " - " separator.
-export function displayTitle(title: string): string {
-  if (isWorldCup(title)) return title.split(/\s+[-–—]\s+/)[0].trim() || title;
-  return title;
-}
-
-// Recurring broadcast/festival programs that collapse into one feed/detail entry.
-export const SERIES_PATTERNS: { key: string; label: string; re: RegExp }[] = [
-  { key: "fifa-world-cup", label: "FIFA World Cup 2026", re: WORLD_CUP_RE },
-  { key: "ghibli-fest", label: "Studio Ghibli Fest", re: /ghibli fest/i },
-  { key: "met-opera", label: "The Met: Live in HD", re: /met opera|the met: live/i },
-];
-
-export function seriesOf(title: string): { key: string; label: string } | null {
-  for (const p of SERIES_PATTERNS) if (p.re.test(title)) return { key: p.key, label: p.label };
-  return null;
-}
-
-export function seriesByKey(key: string): { key: string; label: string } | null {
-  const p = SERIES_PATTERNS.find((s) => s.key === key);
-  return p ? { key: p.key, label: p.label } : null;
-}
-
-export interface ShowGroup {
-  key: string;
-  theatre: { slug: string; name: string };
-  tag: string | null; // shared format tag, shown once in the label
-  shows: ApiShowtime[];
-}
-
-// Group a movie's showtimes by theatre + format so the format label appears once
-// and each time renders as a tiny bare pill (several fit per row).
-export function groupShowtimes(shows: ApiShowtime[]): ShowGroup[] {
-  const map = new Map<string, ShowGroup>();
-  for (const s of shows) {
-    const tag = formatTag(s.format);
-    const key = `${s.theatre.slug}|${tag ?? ""}`;
-    const g = map.get(key) ?? { key, theatre: s.theatre, tag, shows: [] };
-    g.shows.push(s);
-    map.set(key, g);
-  }
-  const groups = [...map.values()];
-  for (const g of groups) g.shows.sort((a, b) => (a.startsAt < b.startsAt ? -1 : 1));
-  groups.sort((a, b) => {
-    // Caption/subtitle/dubbed groups always come after the regular ones.
-    const ca = isCaptionTag(a.tag) ? 1 : 0;
-    const cb = isCaptionTag(b.tag) ? 1 : 0;
-    if (ca !== cb) return ca - cb;
-    return a.shows[0].startsAt < b.shows[0].startsAt ? -1 : 1;
-  });
-  return groups;
-}
+export * from "@/lib/showtimes";
 
 export function FilmIcon({ className }: { className?: string }) {
   return (
@@ -223,9 +74,11 @@ export function RatingBadge({ movie }: { movie: Movie }) {
 
 export function Badge({
   tone,
+  title,
   children,
 }: {
   tone: "classic" | "special" | "indie" | "foreign" | "rare";
+  title?: string;
   children: ReactNode;
 }) {
   const map = {
@@ -236,7 +89,10 @@ export function Badge({
     rare: "bg-rare/15 text-rare ring-rare/25",
   };
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.04em] ring-1 ${map[tone]}`}>
+    <span
+      title={title}
+      className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.04em] ring-1 ${map[tone]}`}
+    >
       {children}
     </span>
   );
@@ -312,7 +168,7 @@ export function TimeChip({
       target="_blank"
       rel="noopener noreferrer"
       aria-label={label}
-      className="inline-flex items-center rounded border border-line bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="inline-flex min-h-[34px] items-center rounded border border-line bg-surface-3 px-2 py-1 text-[11px] font-medium tabular-nums leading-none text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       {compactTime(s.time)}
     </a>

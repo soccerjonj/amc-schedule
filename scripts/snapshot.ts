@@ -32,6 +32,8 @@ async function main() {
         isIndie: s.movie.isIndie,
         isForeign: s.movie.isForeign,
         releaseDate: s.movie.releaseDate ? s.movie.releaseDate.toISOString() : null,
+        rating: s.movie.rating,
+        runtimeMinutes: s.movie.runtimeMinutes,
         posterUrl: s.movie.posterUrl,
         letterboxdRating: s.movie.letterboxdRating,
         letterboxdUrl: s.movie.letterboxdUrl,
