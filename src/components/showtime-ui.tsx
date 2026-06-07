@@ -91,7 +91,7 @@ export function Badge({
   return (
     <span
       title={title}
-      className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.04em] ring-1 ${map[tone]}`}
+      className={`rounded px-1 py-px text-[9px] font-bold uppercase tracking-[0.03em] ring-1 ${map[tone]}`}
     >
       {children}
     </span>

@@ -857,7 +857,7 @@ const MovieCard = memo(function MovieCard({
             {isNew && (
               <span
                 title="New release / premiere"
-                className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.04em] text-black"
+                className="rounded bg-accent px-1 py-px text-[9px] font-bold uppercase tracking-[0.03em] text-black"
               >
                 New
               </span>
