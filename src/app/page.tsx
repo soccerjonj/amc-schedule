@@ -543,14 +543,57 @@ function ModeToggle({ value, onChange }: { value: Mode; onChange: (m: Mode) => v
   );
 }
 
+// Category encoding for a month-cell preview line (a colored dot per title).
+type CellTone = "special" | "rare" | "classic" | "indie" | "foreign" | "series" | "plain";
+
+const TONE_DOT: Record<CellTone, string> = {
+  special: "bg-special",
+  rare: "bg-rare",
+  classic: "bg-classic",
+  indie: "bg-emerald-400",
+  foreign: "bg-orange-400",
+  series: "bg-ink-3", // recurring-broadcast firehose (World Cup) — recessive
+  plain: "bg-ink-3",
+};
+
+// Lower = more notable; drives which titles survive into the (tiny) cell preview.
+const TONE_RANK: Record<CellTone, number> = {
+  special: 0,
+  rare: 1,
+  classic: 2,
+  indie: 3,
+  foreign: 4,
+  series: 5,
+  plain: 6,
+};
+
+// Recurring series treated as background noise (matches dominate the schedule but
+// aren't "gems" in the user's mind). Other series (Ghibli Fest, Met) stay gems.
+const NOISE_SERIES = new Set(["fifa-world-cup"]);
+
+function movieTone(m: Movie): CellTone {
+  if (m.isSpecialEvent) return "special";
+  if (m.isRare) return "rare";
+  if (m.isClassic) return "classic";
+  if (m.isIndie) return "indie";
+  if (m.isForeign) return "foreign";
+  return "plain";
+}
+
+interface PreviewItem {
+  label: string;
+  tone: CellTone;
+  count?: number; // distinct matches/films when this line is a collapsed series
+}
+
 interface CellData {
   day: string;
   dt: DateTime;
-  total: number;
-  gems: MovieGroup[];
-  preview: string[];
-  moreGems: number;
-  gemPreview: boolean; // true when preview lists gems (gold) vs fallback titles (muted)
+  total: number; // distinct titles/series that day (series counted once)
+  gemCount: number; // highlighted gems (collapsed series count once; World Cup excluded)
+  hero: boolean; // a special-event one-off OR 2+ gems → the day glows
+  preview: PreviewItem[];
+  moreCount: number;
   isToday: boolean;
   isPast: boolean;
   empty: boolean;
@@ -558,19 +601,67 @@ interface CellData {
 
 function cellData(day: string, byDay: Record<string, MovieGroup[]>): CellData {
   const groups = byDay[day] ?? [];
-  const gems = groups.filter((g) => g.isGem); // gems-first order preserved from groupByDay
-  // When a day has no gems, still preview a few titles (muted) so a busy day reads
-  // differently from an empty one.
-  const source = gems.length ? gems : groups;
+  // Collapse recurring series (FIFA World Cup, Ghibli Fest…) into a single entry so a
+  // soccer-heavy day doesn't bury real gems — mirrors the Upcoming feed.
+  interface Entry {
+    rep: MovieGroup;
+    tone: CellTone;
+    label: string;
+    isGemShown: boolean; // gem AND not noise → counts/glows
+    isSeries: boolean;
+    count: number;
+    earliest: string;
+  }
+  const map = new Map<string, Entry>();
+  for (const g of groups) {
+    const series = seriesOf(g.movie.title);
+    const noise = series ? NOISE_SERIES.has(series.key) : false;
+    const key = series ? series.key : g.movie.id;
+    let e = map.get(key);
+    if (!e) {
+      e = {
+        rep: g,
+        tone: noise ? "series" : movieTone(g.movie),
+        label: series ? series.label : displayTitle(g.movie.title),
+        isGemShown: g.isGem && !noise,
+        isSeries: !!series,
+        count: 0,
+        earliest: g.earliest,
+      };
+      map.set(key, e);
+    }
+    e.count++;
+    e.isGemShown = e.isGemShown || (g.isGem && !noise);
+    if (g.earliest < e.earliest) e.earliest = g.earliest;
+  }
+  const entries = [...map.values()];
+  // Rank: shown-gems first, then by notability, then earliest.
+  entries.sort((a, b) => {
+    const ag = a.isGemShown ? 0 : 1;
+    const bg = b.isGemShown ? 0 : 1;
+    if (ag !== bg) return ag - bg;
+    const ar = TONE_RANK[a.tone];
+    const br = TONE_RANK[b.tone];
+    if (ar !== br) return ar - br;
+    return a.earliest < b.earliest ? -1 : 1;
+  });
+  const gems = entries.filter((e) => e.isGemShown);
+  // "Hero" = a genuine special event / anniversary that day (these are the real
+  // standouts). Plain gem days are common here, so 2+ gems would glow everywhere.
+  const hasSpecial = gems.some((e) => e.rep.movie.isSpecialEvent);
   const today = todayISO();
   return {
     day,
     dt: DateTime.fromISO(day, { zone: TZ }),
-    total: groups.length,
-    gems,
-    preview: source.slice(0, GEM_PREVIEW).map((g) => displayTitle(g.movie.title)),
-    moreGems: Math.max(0, source.length - GEM_PREVIEW),
-    gemPreview: gems.length > 0,
+    total: entries.length,
+    gemCount: gems.length,
+    hero: hasSpecial,
+    preview: entries.slice(0, GEM_PREVIEW).map((e) => ({
+      label: e.label,
+      tone: e.tone,
+      count: e.isSeries ? e.count : undefined,
+    })),
+    moreCount: Math.max(0, entries.length - GEM_PREVIEW),
     isToday: day === today,
     isPast: day < today,
     empty: groups.length === 0,
@@ -627,18 +718,44 @@ function MonthCell({
   onJump: (day: string) => void;
   variant: "grid" | "agenda";
 }) {
+  // Visual weight tracks gem density: notable days glow, noise/empty days recede.
   const stateCls = c.isToday
     ? "border-accent/40 bg-surface-2 ring-1 ring-accent/20"
     : c.empty
       ? "border-line bg-surface opacity-50"
-      : c.gems.length
-        ? "border-gem/30 bg-gem/[0.04] hover:bg-gem/[0.07]"
-        : "border-line bg-surface hover:bg-surface-2";
+      : c.hero
+        ? "border-gem/50 bg-gem/[0.07] hover:bg-gem/[0.10]"
+        : c.gemCount > 0
+          ? "border-gem/30 bg-gem/[0.04] hover:bg-gem/[0.07]"
+          : "border-line bg-surface opacity-75 hover:bg-surface-2 hover:opacity-100";
   const dateText = c.isToday ? "text-accent" : c.isPast ? "text-ink-3" : "text-ink";
-  const previewCls = c.gemPreview ? "text-gem/90" : "text-ink-3";
   const aria = `${c.isToday ? "Today, " : ""}${c.dt.toFormat("cccc, LLLL d")}: ${c.total} ${
-    c.total === 1 ? "movie" : "movies"
-  }${c.gems.length ? `, ${c.gems.length} highlighted` : ""} — open week view`;
+    c.total === 1 ? "title" : "titles"
+  }${c.gemCount ? `, ${c.gemCount} gem${c.gemCount === 1 ? "" : "s"}` : ""} — open week view`;
+
+  const countBadge =
+    c.gemCount > 0 ? (
+      <span className="inline-flex items-baseline gap-0.5 rounded-full bg-gem/20 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+        <span className="text-gem">{c.gemCount}</span>
+        <span className="text-ink-3">/{c.total}</span>
+      </span>
+    ) : c.total > 0 ? (
+      <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink-3">
+        {c.total}
+      </span>
+    ) : null;
+
+  const lines = (
+    <>
+      {c.preview.map((p, i) => (
+        <span key={i} className="flex items-center gap-1 leading-tight">
+          <span className={`h-1.5 w-1.5 flex-none rounded-full ${TONE_DOT[p.tone]}`} aria-hidden="true" />
+          <span className="truncate text-ink-2">{p.count ? `${p.label} · ${p.count}` : p.label}</span>
+        </span>
+      ))}
+      {c.moreCount > 0 && <span className="pl-2.5 text-[10px] font-medium text-ink-3">+{c.moreCount} more</span>}
+    </>
+  );
 
   if (variant === "grid") {
     return (
@@ -649,22 +766,14 @@ function MonthCell({
         aria-current={c.isToday ? "date" : undefined}
         className={`flex min-h-[7.5rem] flex-col gap-1 rounded-lg border p-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${stateCls}`}
       >
-        <div className="flex items-baseline justify-between">
-          <span className={`text-sm font-semibold tabular-nums ${dateText}`}>{c.dt.toFormat("d")}</span>
-          {c.total > 0 && (
-            <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink-2">
-              {c.total}
-            </span>
-          )}
+        <div className="flex items-baseline justify-between gap-1">
+          <span className={`flex items-baseline gap-0.5 text-sm font-semibold tabular-nums ${dateText}`}>
+            {c.hero && <span className="text-gem" aria-hidden="true">✦</span>}
+            {c.dt.toFormat("d")}
+          </span>
+          {countBadge}
         </div>
-        <div className="flex min-w-0 flex-col gap-0.5">
-          {c.preview.map((t, i) => (
-            <span key={i} className={`truncate text-[11px] leading-tight ${previewCls}`}>
-              {t}
-            </span>
-          ))}
-          {c.moreGems > 0 && <span className="text-[10px] font-medium text-ink-3">+{c.moreGems} more</span>}
-        </div>
+        <div className="flex min-w-0 flex-col gap-0.5 text-[11px]">{lines}</div>
       </button>
     );
   }
@@ -675,25 +784,16 @@ function MonthCell({
       onClick={() => onJump(c.day)}
       aria-label={aria}
       aria-current={c.isToday ? "date" : undefined}
-      className={`flex flex-col gap-1 rounded-lg border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${stateCls}`}
+      className={`flex flex-col gap-1.5 rounded-lg border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${stateCls}`}
     >
-      <div className="flex items-center justify-between">
-        <span className={`text-sm font-semibold ${dateText}`}>{c.dt.toFormat("ccc, LLL d")}</span>
-        <span className="text-xs text-ink-3">
-          {c.empty ? "No screenings" : `${c.total} ${c.total === 1 ? "movie" : "movies"}`}
+      <div className="flex items-center justify-between gap-2">
+        <span className={`flex items-baseline gap-0.5 text-sm font-semibold ${dateText}`}>
+          {c.hero && <span className="text-gem" aria-hidden="true">✦</span>}
+          {c.dt.toFormat("ccc, LLL d")}
         </span>
+        {c.empty ? <span className="text-xs text-ink-3">No screenings</span> : countBadge}
       </div>
-      {c.preview.length > 0 && (
-        <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-          {c.preview.map((t, i) => (
-            <span key={i} className={`text-[12px] leading-tight ${previewCls}`}>
-              {t}
-              {i < c.preview.length - 1 || c.moreGems > 0 ? " ·" : ""}
-            </span>
-          ))}
-          {c.moreGems > 0 && <span className="text-[11px] font-medium text-ink-3">+{c.moreGems} more</span>}
-        </div>
-      )}
+      {c.preview.length > 0 && <div className="flex flex-col gap-0.5 text-[12px]">{lines}</div>}
     </button>
   );
 }
