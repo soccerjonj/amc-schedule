@@ -16,6 +16,9 @@ import {
   seriesOf,
   groupShowtimes,
   isCaptionTag,
+  formatTag,
+  PREMIUM_FORMATS,
+  BADGE_GLOSS,
   Poster,
   RatingBadge,
   Badge,
@@ -70,6 +73,9 @@ function Calendar() {
     () => params.get("th")?.split(",").filter(Boolean) ?? [],
   );
   const [query, setQuery] = useState(() => params.get("q") ?? "");
+  const [selectedFormats, setSelectedFormats] = useState<string[]>(
+    () => params.get("fmt")?.split(",").filter(Boolean) ?? [],
+  );
   const [density, setDensity] = useState<Density>(() => (params.get("view") === "list" ? "list" : "compact"));
   const [mode, setMode] = useState<Mode>(() => {
     const m = params.get("mode");
@@ -123,12 +129,13 @@ function Calendar() {
     if (weekStart !== todayISO()) p.set("d", weekStart);
     if (category !== "all") p.set("cat", category);
     if (selectedTheatres.length) p.set("th", selectedTheatres.join(","));
+    if (selectedFormats.length) p.set("fmt", selectedFormats.join(","));
     if (debouncedQuery) p.set("q", debouncedQuery);
     if (density !== "compact") p.set("view", density);
     if (mode !== "week") p.set("mode", mode);
     const qs = p.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  }, [weekStart, category, selectedTheatres, debouncedQuery, density, mode, pathname, router]);
+  }, [weekStart, category, selectedTheatres, selectedFormats, debouncedQuery, density, mode, pathname, router]);
 
   useEffect(() => {
     // Upcoming is always anchored at today over the full horizon; week/month follow the anchor.
@@ -137,6 +144,7 @@ function Calendar() {
       mode === "upcoming" ? String(UPCOMING_SPAN) : mode === "month" ? String(MONTH_SPAN) : "7";
     const p = new URLSearchParams({ start: fetchStart, days: fetchDays, category });
     if (selectedTheatres.length) p.set("theatres", selectedTheatres.join(","));
+    if (selectedFormats.length) p.set("fmt", selectedFormats.join(","));
     if (debouncedQuery) p.set("q", debouncedQuery);
     const ac = new AbortController();
     setLoading(true);
@@ -188,6 +196,29 @@ function Calendar() {
     );
   }
 
+  function toggleFormat(f: string) {
+    setSelectedFormats((cur) => (cur.includes(f) ? cur.filter((x) => x !== f) : [...cur, f]));
+  }
+
+  const anyFilter =
+    category !== "all" || selectedTheatres.length > 0 || selectedFormats.length > 0 || debouncedQuery.length > 0;
+
+  function clearFilters() {
+    setCategory("all");
+    setSelectedTheatres([]);
+    setSelectedFormats([]);
+    setQuery("");
+  }
+
+  const activeFilterSummary = [
+    debouncedQuery ? `“${debouncedQuery}”` : "",
+    category !== "all" ? CATEGORIES.find((c) => c.value === category)?.label ?? "" : "",
+    selectedFormats.join("/"),
+    selectedTheatres.map((s) => theatreLabel(s, s)).join(", "),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   const navBtn =
     "rounded-full border border-line bg-surface px-3 py-1.5 text-sm text-ink-2 transition hover:border-line-2 hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
   const step = mode === "month" ? MONTH_SPAN : 7;
@@ -207,6 +238,9 @@ function Calendar() {
               <div className="flex items-center gap-1.5">
                 <button onClick={() => setWeekStart(todayISO())} className={navBtn}>
                   Today
+                </button>
+                <button onClick={() => setWeekStart(upcomingFriday())} className={navBtn} title="Jump to this weekend">
+                  Weekend
                 </button>
                 <button onClick={() => setWeekStart(shift(weekStart, -step))} aria-label="Previous" className={navBtn}>
                   ←
@@ -249,10 +283,19 @@ function Calendar() {
               {CATEGORIES.map((c) => {
                 const active = category === c.value;
                 const activeCls = c.value === "gems" ? "bg-gem text-black" : "bg-accent text-black";
+                const tip =
+                  c.value === "gems"
+                    ? BADGE_GLOSS.Gem
+                    : c.value === "classic"
+                      ? BADGE_GLOSS.Throwback
+                      : c.value === "special"
+                        ? BADGE_GLOSS.Special
+                        : undefined;
                 return (
                   <button
                     key={c.value}
                     aria-pressed={active}
+                    title={tip}
                     onClick={() => setCategory(c.value)}
                     className={`rounded-full px-3 py-1 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                       active ? activeCls : "border border-line bg-surface text-ink-2 hover:bg-surface-2 hover:text-ink"
@@ -296,10 +339,48 @@ function Calendar() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              aria-label="Search movies by title"
-              placeholder="Search movie…"
+              aria-label="Search by title, format, or series"
+              placeholder="Search title or “70mm”…"
               className="ml-auto w-40 rounded-full border border-line bg-surface px-3 py-1 text-sm text-ink outline-none transition placeholder:text-ink-3 focus-visible:border-accent focus-visible:ring-1 focus-visible:ring-accent sm:w-56"
             />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">Format</span>
+            <div role="group" aria-label="Format" className="flex flex-wrap items-center gap-1.5">
+              {PREMIUM_FORMATS.map((f) => {
+                const selected = selectedFormats.includes(f);
+                const dimmed = selectedFormats.length > 0 && !selected;
+                return (
+                  <button
+                    key={f}
+                    aria-pressed={selected}
+                    onClick={() => toggleFormat(f)}
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                      selected
+                        ? "bg-accent/20 text-accent ring-1 ring-accent/40"
+                        : dimmed
+                          ? "border border-line text-ink-3"
+                          : "border border-line-2 text-ink-2 hover:text-ink"
+                    }`}
+                  >
+                    {f}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="ml-1 hidden text-[11px] text-ink-3 sm:block">
+              <span className="font-semibold text-gem">Gems</span> = easy-to-miss screenings (throwbacks, special
+              events, rare & indie).
+            </p>
+            {anyFilter && (
+              <button
+                onClick={clearFilters}
+                className="ml-auto rounded-full px-2 py-1 text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Clear all
+              </button>
+            )}
           </div>
 
           {showHidden && hidden.size > 0 && (
@@ -335,9 +416,15 @@ function Calendar() {
                 return (
                   <button
                     key={day}
-                    onClick={() =>
-                      document.getElementById(`day-${day}`)?.scrollIntoView({ behavior: "smooth", block: "start" })
-                    }
+                    aria-current={isToday ? "date" : undefined}
+                    onClick={() => {
+                      const reduce =
+                        typeof window !== "undefined" &&
+                        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+                      document
+                        .getElementById(`day-${day}`)
+                        ?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+                    }}
                     className={`flex-none rounded-full px-2.5 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                       isToday
                         ? "bg-accent/15 text-accent ring-1 ring-accent/30"
@@ -365,7 +452,11 @@ function Calendar() {
             </button>
           </div>
         ) : mode === "upcoming" ? (
-          <UpcomingView buckets={upcomingBuckets} onHide={hideMovie} />
+          <UpcomingView
+            buckets={upcomingBuckets}
+            onHide={hideMovie}
+            onClear={anyFilter ? clearFilters : undefined}
+          />
         ) : mode === "month" ? (
           <MonthView
             dayKeys={data?.dayKeys ?? []}
@@ -384,11 +475,21 @@ function Calendar() {
         )}
 
         {data && data.total === 0 && !error && mode !== "upcoming" && (
-          <p className="mt-10 text-center text-sm text-ink-3">
-            {debouncedQuery
-              ? `No movies match “${debouncedQuery}” ${mode === "month" ? "this month" : "this week"}.`
-              : `No showtimes match these filters ${mode === "month" ? "this month" : "this week"}.`}
-          </p>
+          <div className="mt-10 flex flex-col items-center gap-3 text-center">
+            <p className="text-sm text-ink-3">
+              {activeFilterSummary
+                ? `No showtimes for ${activeFilterSummary} ${mode === "month" ? "this month" : "this week"}.`
+                : `No showtimes ${mode === "month" ? "this month" : "this week"}.`}
+            </p>
+            {anyFilter && (
+              <button
+                onClick={clearFilters}
+                className="rounded-full bg-accent px-4 py-1.5 text-sm font-semibold text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
         )}
       </main>
     </>
@@ -449,6 +550,7 @@ interface CellData {
   gems: MovieGroup[];
   preview: string[];
   moreGems: number;
+  gemPreview: boolean; // true when preview lists gems (gold) vs fallback titles (muted)
   isToday: boolean;
   isPast: boolean;
   empty: boolean;
@@ -457,14 +559,18 @@ interface CellData {
 function cellData(day: string, byDay: Record<string, MovieGroup[]>): CellData {
   const groups = byDay[day] ?? [];
   const gems = groups.filter((g) => g.isGem); // gems-first order preserved from groupByDay
+  // When a day has no gems, still preview a few titles (muted) so a busy day reads
+  // differently from an empty one.
+  const source = gems.length ? gems : groups;
   const today = todayISO();
   return {
     day,
     dt: DateTime.fromISO(day, { zone: TZ }),
     total: groups.length,
     gems,
-    preview: gems.slice(0, GEM_PREVIEW).map((g) => displayTitle(g.movie.title)),
-    moreGems: Math.max(0, gems.length - GEM_PREVIEW),
+    preview: source.slice(0, GEM_PREVIEW).map((g) => displayTitle(g.movie.title)),
+    moreGems: Math.max(0, source.length - GEM_PREVIEW),
+    gemPreview: gems.length > 0,
     isToday: day === today,
     isPast: day < today,
     empty: groups.length === 0,
@@ -529,9 +635,10 @@ function MonthCell({
         ? "border-gem/30 bg-gem/[0.04] hover:bg-gem/[0.07]"
         : "border-line bg-surface hover:bg-surface-2";
   const dateText = c.isToday ? "text-accent" : c.isPast ? "text-ink-3" : "text-ink";
-  const aria = `${c.dt.toFormat("cccc, LLLL d")}: ${c.total} ${c.total === 1 ? "movie" : "movies"}${
-    c.gems.length ? `, ${c.gems.length} highlighted` : ""
-  } — open week view`;
+  const previewCls = c.gemPreview ? "text-gem/90" : "text-ink-3";
+  const aria = `${c.isToday ? "Today, " : ""}${c.dt.toFormat("cccc, LLLL d")}: ${c.total} ${
+    c.total === 1 ? "movie" : "movies"
+  }${c.gems.length ? `, ${c.gems.length} highlighted` : ""} — open week view`;
 
   if (variant === "grid") {
     return (
@@ -539,6 +646,7 @@ function MonthCell({
         type="button"
         onClick={() => onJump(c.day)}
         aria-label={aria}
+        aria-current={c.isToday ? "date" : undefined}
         className={`flex min-h-[7.5rem] flex-col gap-1 rounded-lg border p-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${stateCls}`}
       >
         <div className="flex items-baseline justify-between">
@@ -551,7 +659,7 @@ function MonthCell({
         </div>
         <div className="flex min-w-0 flex-col gap-0.5">
           {c.preview.map((t, i) => (
-            <span key={i} className="truncate text-[11px] leading-tight text-gem/90">
+            <span key={i} className={`truncate text-[11px] leading-tight ${previewCls}`}>
               {t}
             </span>
           ))}
@@ -566,6 +674,7 @@ function MonthCell({
       type="button"
       onClick={() => onJump(c.day)}
       aria-label={aria}
+      aria-current={c.isToday ? "date" : undefined}
       className={`flex flex-col gap-1 rounded-lg border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${stateCls}`}
     >
       <div className="flex items-center justify-between">
@@ -577,7 +686,7 @@ function MonthCell({
       {c.preview.length > 0 && (
         <div className="flex flex-wrap gap-x-2 gap-y-0.5">
           {c.preview.map((t, i) => (
-            <span key={i} className="text-[12px] leading-tight text-gem/90">
+            <span key={i} className={`text-[12px] leading-tight ${previewCls}`}>
               {t}
               {i < c.preview.length - 1 || c.moreGems > 0 ? " ·" : ""}
             </span>
@@ -667,7 +776,7 @@ const DayColumn = memo(function DayColumn({
           <p className="py-6 text-center text-xs text-ink-3">No showtimes</p>
         ) : (
           groups.map((g) => (
-            <MovieCard key={g.movie.id} group={g} density={density} dayLabel={dayLabel} onHide={onHide} />
+            <MovieCard key={g.movie.id} group={g} day={day} density={density} dayLabel={dayLabel} onHide={onHide} />
           ))
         )}
       </div>
@@ -677,11 +786,13 @@ const DayColumn = memo(function DayColumn({
 
 const MovieCard = memo(function MovieCard({
   group,
+  day,
   density,
   dayLabel,
   onHide,
 }: {
   group: MovieGroup;
+  day: string;
   density: Density;
   dayLabel: string;
   onHide: (id: string, title: string) => void;
@@ -693,6 +804,11 @@ const MovieCard = memo(function MovieCard({
   const showGroups = expanded || total <= CHIP_LIMIT ? groups : trimGroups(groups, CHIP_LIMIT);
   const hidden = total - countShows(showGroups);
   const title = displayTitle(movie.title);
+  // Premiere flag: a screening within a week of (or before) the film's release date.
+  const isNew = movie.releaseDate ? movie.releaseDate.slice(0, 10) >= shift(day, -7) : false;
+  const metaBits = [movie.rating, movie.runtimeMinutes ? fmtRuntime(movie.runtimeMinutes) : null].filter(
+    Boolean,
+  ) as string[];
 
   return (
     <article
@@ -723,7 +839,7 @@ const MovieCard = memo(function MovieCard({
             onClick={() => onHide(movie.id, title)}
             aria-label={`Hide ${title} from all days`}
             title="Hide this movie"
-            className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-60 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-100 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:opacity-60"
           >
             <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
               <path d="M6 6l12 12M18 6L6 18" />
@@ -731,19 +847,29 @@ const MovieCard = memo(function MovieCard({
           </button>
         </div>
 
-        {(movie.isClassic ||
+        {(isNew ||
+          movie.isClassic ||
           movie.isSpecialEvent ||
           movie.isIndie ||
           movie.isForeign ||
           movie.isRare) && (
-          <div className="flex flex-wrap gap-1">
-            {movie.isClassic && <Badge tone="classic">Throwback</Badge>}
-            {movie.isSpecialEvent && <Badge tone="special">Special</Badge>}
-            {movie.isIndie && <Badge tone="indie">Indie</Badge>}
-            {movie.isForeign && <Badge tone="foreign">Foreign</Badge>}
-            {movie.isRare && <Badge tone="rare">Rare</Badge>}
+          <div className="flex flex-wrap items-center gap-1">
+            {isNew && (
+              <span
+                title="New release / premiere"
+                className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.04em] text-black"
+              >
+                New
+              </span>
+            )}
+            {movie.isClassic && <Badge tone="classic" title={BADGE_GLOSS.Throwback}>Throwback</Badge>}
+            {movie.isSpecialEvent && <Badge tone="special" title={BADGE_GLOSS.Special}>Special</Badge>}
+            {movie.isIndie && <Badge tone="indie" title={BADGE_GLOSS.Indie}>Indie</Badge>}
+            {movie.isForeign && <Badge tone="foreign" title={BADGE_GLOSS.Foreign}>Foreign</Badge>}
+            {movie.isRare && <Badge tone="rare" title={BADGE_GLOSS.Rare}>Rare</Badge>}
           </div>
         )}
+        {metaBits.length > 0 && <p className="text-[10px] leading-tight text-ink-3">{metaBits.join(" · ")}</p>}
 
         <div className="flex flex-col gap-1">
           {showGroups.map((g) => (
@@ -799,6 +925,19 @@ function formatRange(startISO: string): string {
   const start = DateTime.fromISO(startISO, { zone: TZ });
   const end = start.plus({ days: 6 });
   return `${start.toFormat("LLL d")} – ${end.toFormat("LLL d")}`;
+}
+
+// This (or the upcoming) Friday — anchors a "weekend" week starting Fri. If today
+// is already Fri/Sat/Sun, anchor at today so the current weekend stays in view.
+function upcomingFriday(): string {
+  const dt = DateTime.now().setZone(TZ).startOf("day");
+  return (dt.weekday >= 5 ? dt : dt.plus({ days: 5 - dt.weekday })).toISODate()!;
+}
+
+function fmtRuntime(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h ? `${h}h${m ? ` ${m}m` : ""}` : `${m}m`;
 }
 
 // Sunday on or before the given date (Luxon's startOf("week") is Monday-based).
@@ -953,16 +1092,26 @@ function aggregateUpcoming(shows: ApiShowtime[]): UpcomingBuckets {
 function UpcomingView({
   buckets,
   onHide,
+  onClear,
 }: {
   buckets: UpcomingBuckets;
   onHide: (id: string, title: string) => void;
+  onClear?: () => void;
 }) {
   const sections = UPCOMING_SECTIONS.filter((s) => buckets[s.key].length > 0);
   if (sections.length === 0) {
     return (
-      <p className="mt-10 text-center text-sm text-ink-3">
-        No upcoming highlights in the next 90 days. Try clearing filters.
-      </p>
+      <div className="mt-10 flex flex-col items-center gap-3 text-center">
+        <p className="text-sm text-ink-3">No upcoming highlights in the next 90 days.</p>
+        {onClear && (
+          <button
+            onClick={onClear}
+            className="rounded-full bg-accent px-4 py-1.5 text-sm font-semibold text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
     );
   }
   return (
@@ -1042,7 +1191,7 @@ function UpcomingItemCard({ item, onHide }: { item: UpcomingItem; onHide: (id: s
               }}
               aria-label={`Hide ${item.title}`}
               title="Hide this movie"
-              className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-60 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-100 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:opacity-60"
             >
               <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
                 <path d="M6 6l12 12M18 6L6 18" />
@@ -1052,11 +1201,11 @@ function UpcomingItemCard({ item, onHide }: { item: UpcomingItem; onHide: (id: s
         </div>
         {hasBadges && (
           <div className="flex flex-wrap gap-1">
-            {movie.isClassic && <Badge tone="classic">Throwback</Badge>}
-            {movie.isSpecialEvent && <Badge tone="special">Special</Badge>}
-            {movie.isIndie && <Badge tone="indie">Indie</Badge>}
-            {movie.isForeign && <Badge tone="foreign">Foreign</Badge>}
-            {showRare && <Badge tone="rare">Rare</Badge>}
+            {movie.isClassic && <Badge tone="classic" title={BADGE_GLOSS.Throwback}>Throwback</Badge>}
+            {movie.isSpecialEvent && <Badge tone="special" title={BADGE_GLOSS.Special}>Special</Badge>}
+            {movie.isIndie && <Badge tone="indie" title={BADGE_GLOSS.Indie}>Indie</Badge>}
+            {movie.isForeign && <Badge tone="foreign" title={BADGE_GLOSS.Foreign}>Foreign</Badge>}
+            {showRare && <Badge tone="rare" title={BADGE_GLOSS.Rare}>Rare</Badge>}
           </div>
         )}
         <p className={`text-[11px] font-semibold ${item.isOpening ? "text-accent" : "text-ink-2"}`}>{primary}</p>

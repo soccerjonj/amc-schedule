@@ -19,6 +19,7 @@ import {
   displayTitle,
   groupShowtimes,
   isCaptionTag,
+  formatTag,
   seriesByKey,
   seriesOf,
   Poster,
@@ -26,6 +27,12 @@ import {
   Badge,
   TimeChip,
 } from "./showtime-ui";
+
+function detailRuntime(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h ? `${h}h${m ? ` ${m}m` : ""}` : `${m}m`;
+}
 
 export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: string }) {
   const router = useRouter();
@@ -77,15 +84,28 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   const title = series ? series.label : rep ? displayTitle(rep.title) : "";
   const releaseYear = rep?.releaseDate ? rep.releaseDate.slice(0, 4) : null;
 
+  // At-a-glance summary derived from the showtimes (theatres, premium formats, next show).
+  const theatresList = [...new Map((shows ?? []).map((s) => [s.theatre.slug, s.theatre])).values()];
+  const premiumFormats = [
+    ...new Set((shows ?? []).map((s) => formatTag(s.format)).filter((t): t is string => !!t && !isCaptionTag(t))),
+  ];
+  const nowIso = new Date().toISOString();
+  const nextShow = (shows ?? []).find((s) => s.startsAt >= nowIso) ?? null;
+
   const metaParts: string[] = [];
-  if (kind === "series") metaParts.push(`${distinctMovies} ${distinctMovies === 1 ? "title" : "titles"}`);
-  else if (releaseYear) metaParts.push(releaseYear);
+  if (kind === "series") {
+    metaParts.push(`${distinctMovies} ${distinctMovies === 1 ? "title" : "titles"}`);
+  } else {
+    if (releaseYear) metaParts.push(releaseYear);
+    if (rep?.rating) metaParts.push(rep.rating);
+    if (rep?.runtimeMinutes) metaParts.push(detailRuntime(rep.runtimeMinutes));
+  }
   if (shows) metaParts.push(`${shows.length} showtime${shows.length === 1 ? "" : "s"} · ${days.length} day${days.length === 1 ? "" : "s"}`);
 
   return (
     <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-4">
       <button
-        onClick={() => router.back()}
+        onClick={() => (typeof window !== "undefined" && window.history.length > 1 ? router.back() : router.push("/"))}
         className="mb-3 inline-flex items-center gap-1 rounded-full border border-line px-3 py-1.5 text-sm text-ink-2 transition hover:border-line-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
         ← Back
@@ -101,7 +121,12 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
       ) : !shows ? (
         <p className="py-20 text-center text-sm text-ink-3">Loading…</p>
       ) : shows.length === 0 ? (
-        <p className="py-20 text-center text-sm text-ink-3">No upcoming showtimes for this {kind}.</p>
+        <div className="flex flex-col items-center gap-3 py-20 text-center">
+          <p className="text-sm text-ink-3">No upcoming showtimes for this {kind}.</p>
+          <Link href="/" className="rounded-full bg-accent px-4 py-1.5 text-sm font-semibold text-black">
+            Back to calendar
+          </Link>
+        </div>
       ) : (
         <>
           <header className="mb-4 flex gap-3">
@@ -122,12 +147,45 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
                 </div>
               )}
               {metaParts.length > 0 && <p className="text-sm text-ink-3">{metaParts.join(" · ")}</p>}
+
+              {theatresList.length > 0 && (
+                <p className="text-xs text-ink-2">
+                  Playing at{" "}
+                  <span className="text-ink">
+                    {theatresList.map((t) => theatreLabel(t.slug, t.name)).join(" · ")}
+                  </span>
+                </p>
+              )}
+
+              {premiumFormats.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  {premiumFormats.map((f) => (
+                    <span
+                      key={f}
+                      className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.03em] text-accent"
+                    >
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {nextShow && (
+                <a
+                  href={nextShow.ticketUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-0.5 inline-flex w-fit items-center gap-1.5 rounded-full bg-accent px-3 py-1.5 text-sm font-semibold text-black transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  Next: {DateTime.fromISO(nextShow.startsAt, { zone: TZ }).toFormat("ccc LLL d, h:mm a")}
+                </a>
+              )}
             </div>
           </header>
 
           {/* Day-card grid — mirrors the website's week view: one bordered column
               per playing date, with the showtimes (theatre + format + chips) inside. */}
-          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7">
+          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7">
             {days.map(([day, dayShows]) => (
               <DayCard key={day} day={day} shows={dayShows} bySeries={kind === "series"} />
             ))}
