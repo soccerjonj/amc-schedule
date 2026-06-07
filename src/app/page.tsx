@@ -810,50 +810,50 @@ const MovieCard = memo(function MovieCard({
     Boolean,
   ) as string[];
 
+  const hasRating = movie.letterboxdRating != null || movie.letterboxdUrl;
+  const hasMetaRow =
+    hasRating || isNew || movie.isClassic || movie.isSpecialEvent || movie.isIndie || movie.isForeign || movie.isRare || metaBits.length > 0;
+
   return (
     <article
-      className={`group flex gap-2 rounded-lg border p-1.5 transition ${
+      className={`group relative flex gap-2 rounded-lg border p-1.5 transition ${
         group.isGem
           ? "border-gem/40 bg-gem/[0.04] ring-1 ring-gem/15 hover:bg-gem/[0.07]"
           : "border-line hover:bg-surface-2"
       }`}
     >
+      {/* Hide-× pinned to the corner so it never competes with the title's first line. */}
+      <button
+        onClick={() => onHide(movie.id, title)}
+        aria-label={`Hide ${title} from all days`}
+        title="Hide this movie"
+        className="absolute right-1 top-1 z-10 rounded p-0.5 text-ink-3 transition hover:bg-surface-3 hover:text-rose-300 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:opacity-50 sm:group-hover:opacity-100"
+      >
+        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
+
       {density !== "list" && (
         <Link href={`/movie/${movie.id}`} aria-label={`View showtimes for ${title}`} className="flex-none self-start">
-          <Poster movie={movie} sizeCls="w-10" />
+          <Poster movie={movie} sizeCls="w-11 sm:w-12 xl:w-10" />
         </Link>
       )}
 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex items-start gap-1.5">
-          <h3 className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink">
-            <Link
-              href={`/movie/${movie.id}`}
-              className="rounded transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              {title}
-            </Link>
-          </h3>
-          {(movie.letterboxdRating != null || movie.letterboxdUrl) && <RatingBadge movie={movie} />}
-          <button
-            onClick={() => onHide(movie.id, title)}
-            aria-label={`Hide ${title} from all days`}
-            title="Hide this movie"
-            className="-mr-0.5 -mt-0.5 flex-none rounded p-0.5 text-ink-3 opacity-100 transition hover:bg-surface-3 hover:text-rose-300 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:opacity-60"
+        <h3 className="min-w-0 pr-5 text-[13px] font-semibold leading-tight text-ink [overflow-wrap:normal] line-clamp-2 sm:line-clamp-3">
+          <Link
+            href={`/movie/${movie.id}`}
+            title={title}
+            className="rounded transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
-            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-              <path d="M6 6l12 12M18 6L6 18" />
-            </svg>
-          </button>
-        </div>
+            {title}
+          </Link>
+        </h3>
 
-        {(isNew ||
-          movie.isClassic ||
-          movie.isSpecialEvent ||
-          movie.isIndie ||
-          movie.isForeign ||
-          movie.isRare) && (
+        {hasMetaRow && (
           <div className="flex flex-wrap items-center gap-1">
+            {hasRating && <RatingBadge movie={movie} />}
             {isNew && (
               <span
                 title="New release / premiere"
@@ -867,9 +867,9 @@ const MovieCard = memo(function MovieCard({
             {movie.isIndie && <Badge tone="indie" title={BADGE_GLOSS.Indie}>Indie</Badge>}
             {movie.isForeign && <Badge tone="foreign" title={BADGE_GLOSS.Foreign}>Foreign</Badge>}
             {movie.isRare && <Badge tone="rare" title={BADGE_GLOSS.Rare}>Rare</Badge>}
+            {metaBits.length > 0 && <span className="text-[10px] text-ink-3">{metaBits.join(" · ")}</span>}
           </div>
         )}
-        {metaBits.length > 0 && <p className="text-[10px] leading-tight text-ink-3">{metaBits.join(" · ")}</p>}
 
         <div className="flex flex-col gap-1">
           {showGroups.map((g) => (
@@ -1175,7 +1175,10 @@ function UpcomingItemCard({ item, onHide }: { item: UpcomingItem; onHide: (id: s
       <Poster movie={movie} sizeCls="w-12" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-start gap-1">
-          <h3 className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-tight text-ink">
+          <h3
+            title={item.title}
+            className="min-w-0 flex-1 text-[13px] font-semibold leading-tight text-ink [overflow-wrap:normal] line-clamp-2"
+          >
             {item.title}
           </h3>
           {(movie.letterboxdRating != null || movie.letterboxdUrl) && (
