@@ -47,8 +47,20 @@ jobs:
           node scripts/db-provider.mjs
           npx prisma generate
 
+      # Neon's free tier scales compute to zero when idle, so the first connection
+      # of the day can hit a cold start and fail (P1001 "can't reach database
+      # server"). Retry a few times to let the endpoint wake before giving up.
       - name: Ensure DB schema (idempotent)
-        run: npx prisma db push
+        run: |
+          for i in 1 2 3 4 5; do
+            if npx prisma db push; then
+              exit 0
+            fi
+            echo "prisma db push failed (attempt $i/5) — Neon may be waking; retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::prisma db push failed after 5 attempts (database unreachable)"
+          exit 1
 
       # Cache the ~150MB Chromium binary across runs (keyed on the lockfile so it
       # invalidates when the Playwright version changes). On a hit, the install
