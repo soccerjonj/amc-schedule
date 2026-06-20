@@ -36,7 +36,7 @@ const LEADING_PREFIXES =
   /^(the\s+)?(met\s+opera|the\s+metropolitan\s+opera|fathom\s+events?|tcm|national\s+theatre\s+live|nt\s+live|rifftrax|bolshoi\s+ballet|royal\s+ballet|royal\s+opera)\s*:?\s*/i;
 // Trailing re-release / edition / event suffixes, applied repeatedly (they stack).
 const TRAILING_SUFFIXES =
-  /\s*(\b\d{1,3}(st|nd|rd|th)\s+anniversary\b|\banniversary\b|\bencore\b|\bre-?release\b|\brestored\b|\brestoration\b|\bremastered\b|\bin\s+concert\b|\bsing-?along\b|\bdouble\s+feature\b|\bmarathon\b|\bdirector'?s\s+cut\b|\bextended\s+(edition|cut)\b|\bunrated\b|\bfan\s+first\s+premiere\b|\bsensory[\s-]?friendly(\s+screening)?\b|\bopen[\s-]?caption(ed)?\b|\bearly\s+access(\s+event)?\b|\bopening\s+night(\s+event)?\b|\badvance\s+screening\b|\bspecial\s+(engagement|screening)\b)\s*$/i;
+  /\s*(\bcelebrates\s+(?:its\s+)?(?:\d{1,3}(?:st|nd|rd|th)\s+)?anniversary\b|\b\d{1,3}(st|nd|rd|th)\s+anniversary\b|\banniversary\b|\bencore\b|\bre-?release\b|\brestored\b|\brestoration\b|\bremastered\b|\bin\s+concert\b|\bsing-?along\b|\bdouble\s+feature\b|\bmarathon\b|\bdirector'?s\s+cut\b|\bextended\s+(edition|cut)\b|\bunrated\b|\bfan\s+first(\s+(?:premiere|screenings?|event))?\b|\bsensory[\s-]?friendly(\s+screening)?\b|\bopen[\s-]?caption(ed)?\b|\bearly\s+access(\s+event)?\b|\bopening\s+night(\s+(fan\s+)?event)?\b|\badvance\s+screening\b|\bspecial\s+(engagement|screening)\b|\bimax(?:\s+3d)?\b|\bdolby(?:\s+(?:cinema|atmos|vision|3d))?\b)\s*$/i;
 // Bracketed format tags anywhere in the title.
 const BRACKET_TAGS = /\s*[([](imax(\s*3d)?|3d|4k|70mm|dolby|dubbed|subtitled|sub|ov|omu)[)\]]/gi;
 // Words that mark a trailing parenthetical as an edition/event annotation (not part
