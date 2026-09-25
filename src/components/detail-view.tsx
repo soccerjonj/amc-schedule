@@ -16,6 +16,7 @@ import {
   TZ,
   todayISO,
   theatreLabel,
+  theatreRank,
   displayTitle,
   groupShowtimes,
   isCaptionTag,
@@ -27,6 +28,7 @@ import {
   Badge,
   TimeChip,
 } from "./showtime-ui";
+import { useTheatreOrder } from "./use-theatre-order";
 
 function detailRuntime(min: number): string {
   const h = Math.floor(min / 60);
@@ -38,6 +40,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   const router = useRouter();
   const [shows, setShows] = useState<ApiShowtime[] | null>(null);
   const [error, setError] = useState(false);
+  const { order: theatreOrder } = useTheatreOrder();
 
   useEffect(() => {
     const ac = new AbortController();
@@ -85,7 +88,9 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   const releaseYear = rep?.releaseDate ? rep.releaseDate.slice(0, 4) : null;
 
   // At-a-glance summary derived from the showtimes (theatres, premium formats, next show).
-  const theatresList = [...new Map((shows ?? []).map((s) => [s.theatre.slug, s.theatre])).values()];
+  const theatresList = [...new Map((shows ?? []).map((s) => [s.theatre.slug, s.theatre])).values()].sort(
+    (a, b) => theatreRank(a.slug, theatreOrder) - theatreRank(b.slug, theatreOrder),
+  );
   const premiumFormats = [
     ...new Set((shows ?? []).map((s) => formatTag(s.format)).filter((t): t is string => !!t && !isCaptionTag(t))),
   ];
@@ -187,7 +192,13 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
               per playing date, with the showtimes (theatre + format + chips) inside. */}
           <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7">
             {days.map(([day, dayShows]) => (
-              <DayCard key={day} day={day} shows={dayShows} bySeries={kind === "series"} />
+              <DayCard
+                key={day}
+                day={day}
+                shows={dayShows}
+                bySeries={kind === "series"}
+                theatreOrder={theatreOrder}
+              />
             ))}
           </div>
         </>
@@ -197,7 +208,17 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
 }
 
 // A single day column, styled like the week view's DayColumn.
-function DayCard({ day, shows, bySeries }: { day: string; shows: ApiShowtime[]; bySeries: boolean }) {
+function DayCard({
+  day,
+  shows,
+  bySeries,
+  theatreOrder,
+}: {
+  day: string;
+  shows: ApiShowtime[];
+  bySeries: boolean;
+  theatreOrder: readonly string[];
+}) {
   const dt = DateTime.fromISO(day, { zone: TZ });
   const isToday = day === todayISO();
   return (
@@ -213,7 +234,11 @@ function DayCard({ day, shows, bySeries }: { day: string; shows: ApiShowtime[]; 
         <span className={`text-sm font-semibold ${isToday ? "text-accent" : "text-ink"}`}>{dt.toFormat("LLL d")}</span>
       </h2>
       <div className="flex flex-col gap-2 p-1.5">
-        {bySeries ? <SeriesDay shows={shows} dt={dt} /> : <MovieDay shows={shows} dt={dt} />}
+        {bySeries ? (
+          <SeriesDay shows={shows} dt={dt} theatreOrder={theatreOrder} />
+        ) : (
+          <MovieDay shows={shows} dt={dt} theatreOrder={theatreOrder} />
+        )}
       </div>
     </section>
   );
@@ -235,12 +260,12 @@ function TheatreTimes({ g, title, dayLabel }: { g: ShowGroup; title: string; day
 }
 
 // Single-movie day: a theatre row per theatre/format.
-function MovieDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
+function MovieDay({ shows, dt, theatreOrder }: { shows: ApiShowtime[]; dt: DateTime; theatreOrder: readonly string[] }) {
   const title = displayTitle(shows[0].movie.title);
   const dayLabel = dt.toFormat("ccc, LLL d");
   return (
     <div className="flex flex-col gap-1">
-      {groupShowtimes(shows).map((g) => (
+      {groupShowtimes(shows, theatreOrder).map((g) => (
         <TheatreTimes key={g.key} g={g} title={title} dayLabel={dayLabel} />
       ))}
     </div>
@@ -248,7 +273,7 @@ function MovieDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
 }
 
 // Series day: each film that screens that day, with its own theatre rows.
-function SeriesDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
+function SeriesDay({ shows, dt, theatreOrder }: { shows: ApiShowtime[]; dt: DateTime; theatreOrder: readonly string[] }) {
   const dayLabel = dt.toFormat("ccc, LLL d");
   const byMovie = new Map<string, ApiShowtime[]>();
   for (const s of shows) {
@@ -264,7 +289,7 @@ function SeriesDay({ shows, dt }: { shows: ApiShowtime[]; dt: DateTime }) {
         return (
           <div key={filmShows[0].movie.id} className="flex flex-col gap-0.5">
             <h3 className="text-[12px] font-semibold leading-tight text-ink">{title}</h3>
-            {groupShowtimes(filmShows).map((g) => (
+            {groupShowtimes(filmShows, theatreOrder).map((g) => (
               <TheatreTimes key={g.key} g={g} title={title} dayLabel={dayLabel} />
             ))}
           </div>

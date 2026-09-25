@@ -12,6 +12,7 @@ import {
   TZ,
   todayISO,
   theatreLabel,
+  theatreRank,
   displayTitle,
   seriesOf,
   groupShowtimes,
@@ -24,6 +25,7 @@ import {
   Badge,
   TimeChip,
 } from "@/components/showtime-ui";
+import { useTheatreOrder } from "@/components/use-theatre-order";
 
 type Category = "all" | "gems" | "classic" | "special";
 type Density = "compact" | "list";
@@ -88,6 +90,8 @@ function Calendar() {
   const [reloadKey, setReloadKey] = useState(0);
   const [hidden, setHidden] = useState<Map<string, string>>(() => new Map());
   const [showHidden, setShowHidden] = useState(false);
+  const [showOrder, setShowOrder] = useState(false);
+  const { order: theatreOrder, setOrder: setTheatreOrder, resetOrder: resetTheatreOrder } = useTheatreOrder();
   const barRef = useRef<HTMLDivElement>(null);
 
   // Month grid is Sunday-aligned; the week view starts at the anchor as-is.
@@ -184,7 +188,14 @@ function Calendar() {
     () => (mode === "upcoming" ? aggregateUpcoming(visibleShowtimes) : EMPTY_UPCOMING),
     [mode, visibleShowtimes],
   );
-  const theatres = data?.theatres ?? [];
+  // Theatre chips (and the order panel) follow the visitor's saved order.
+  const theatres = useMemo(
+    () =>
+      [...(data?.theatres ?? [])].sort(
+        (a, b) => theatreRank(a.slug, theatreOrder) - theatreRank(b.slug, theatreOrder),
+      ),
+    [data, theatreOrder],
+  );
   const movieCount = useMemo(
     () => new Set(visibleShowtimes.map((s) => s.movie.id)).size,
     [visibleShowtimes],
@@ -194,6 +205,15 @@ function Calendar() {
     setSelectedTheatres((cur) =>
       cur.includes(slug) ? cur.filter((s) => s !== slug) : [...cur, slug],
     );
+  }
+
+  // Swap a theatre with its neighbour and save the full resulting order.
+  function moveTheatre(index: number, dir: -1 | 1) {
+    const slugs = theatres.map((t) => t.slug);
+    const j = index + dir;
+    if (j < 0 || j >= slugs.length) return;
+    [slugs[index], slugs[j]] = [slugs[j], slugs[index]];
+    setTheatreOrder(slugs);
   }
 
   function toggleFormat(f: string) {
@@ -221,6 +241,8 @@ function Calendar() {
 
   const navBtn =
     "rounded-full border border-line bg-surface px-3 py-1.5 text-sm text-ink-2 transition hover:border-line-2 hover:bg-surface-2 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+  const orderBtn =
+    "flex h-7 w-7 items-center justify-center rounded border border-line text-sm text-ink-2 transition hover:border-line-2 hover:text-ink disabled:opacity-30 disabled:hover:border-line disabled:hover:text-ink-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
   const step = mode === "month" ? MONTH_SPAN : 7;
   const rangeLabel = mode === "month" ? formatMonthRange(gridStart) : formatRange(weekStart);
 
@@ -330,6 +352,18 @@ function Calendar() {
                 </button>
               );
             })}
+            <button
+              onClick={() => setShowOrder((v) => !v)}
+              aria-expanded={showOrder}
+              title="Set your theatre order — which theatre's showtimes list first"
+              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                showOrder || theatreOrder.length > 0
+                  ? "border-accent/40 text-accent"
+                  : "border-line text-ink-3 hover:text-ink"
+              }`}
+            >
+              <span aria-hidden="true">⇅</span> Order
+            </button>
             {selectedTheatres.length > 0 && (
               <button onClick={() => setSelectedTheatres([])} className="text-xs text-accent hover:underline">
                 clear
@@ -408,6 +442,53 @@ function Calendar() {
             </div>
           )}
 
+          {showOrder && theatres.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-2 sm:max-w-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">
+                  Your theatre order
+                </span>
+                <button
+                  onClick={resetTheatreOrder}
+                  disabled={theatreOrder.length === 0}
+                  className="text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:text-ink-3 disabled:no-underline"
+                >
+                  Reset
+                </button>
+              </div>
+              <ol className="flex flex-col gap-1">
+                {theatres.map((t, i) => {
+                  const label = theatreLabel(t.slug, t.name);
+                  return (
+                    <li key={t.slug} className="flex items-center gap-2 rounded-md bg-surface-2 px-2 py-1">
+                      <span className="w-3 text-right text-xs tabular-nums text-ink-3">{i + 1}</span>
+                      <span className="flex-1 text-sm text-ink">{label}</span>
+                      <button
+                        onClick={() => moveTheatre(i, -1)}
+                        disabled={i === 0}
+                        aria-label={`Move ${label} up`}
+                        className={orderBtn}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        onClick={() => moveTheatre(i, 1)}
+                        disabled={i === theatres.length - 1}
+                        aria-label={`Move ${label} down`}
+                        className={orderBtn}
+                      >
+                        ↓
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+              <p className="text-[11px] text-ink-3">
+                Showtimes list theatres in this order. Saved in this browser.
+              </p>
+            </div>
+          )}
+
           {mode === "week" && data && data.dayKeys.length > 0 && (
             <nav aria-label="Jump to day" className="flex gap-1 overflow-x-auto">
               {data.dayKeys.map((day) => {
@@ -454,6 +535,7 @@ function Calendar() {
         ) : mode === "upcoming" ? (
           <UpcomingView
             buckets={upcomingBuckets}
+            theatreOrder={theatreOrder}
             onHide={hideMovie}
             onClear={anyFilter ? clearFilters : undefined}
           />
@@ -469,7 +551,14 @@ function Calendar() {
         ) : (
           <div role="list" className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
             {(data?.dayKeys ?? []).map((day) => (
-              <DayColumn key={day} day={day} groups={byDay[day] ?? []} density={density} onHide={hideMovie} />
+              <DayColumn
+                key={day}
+                day={day}
+                groups={byDay[day] ?? []}
+                density={density}
+                theatreOrder={theatreOrder}
+                onHide={hideMovie}
+              />
             ))}
           </div>
         )}
@@ -836,11 +925,13 @@ const DayColumn = memo(function DayColumn({
   day,
   groups,
   density,
+  theatreOrder,
   onHide,
 }: {
   day: string;
   groups: MovieGroup[];
   density: Density;
+  theatreOrder: readonly string[];
   onHide: (id: string, title: string) => void;
 }) {
   const dt = DateTime.fromISO(day, { zone: TZ });
@@ -876,7 +967,15 @@ const DayColumn = memo(function DayColumn({
           <p className="py-6 text-center text-xs text-ink-3">No showtimes</p>
         ) : (
           groups.map((g) => (
-            <MovieCard key={g.movie.id} group={g} day={day} density={density} dayLabel={dayLabel} onHide={onHide} />
+            <MovieCard
+              key={g.movie.id}
+              group={g}
+              day={day}
+              density={density}
+              dayLabel={dayLabel}
+              theatreOrder={theatreOrder}
+              onHide={onHide}
+            />
           ))
         )}
       </div>
@@ -889,17 +988,19 @@ const MovieCard = memo(function MovieCard({
   day,
   density,
   dayLabel,
+  theatreOrder,
   onHide,
 }: {
   group: MovieGroup;
   day: string;
   density: Density;
   dayLabel: string;
+  theatreOrder: readonly string[];
   onHide: (id: string, title: string) => void;
 }) {
   const { movie } = group;
   const [expanded, setExpanded] = useState(false);
-  const groups = useMemo(() => groupShowtimes(group.shows), [group.shows]);
+  const groups = useMemo(() => groupShowtimes(group.shows, theatreOrder), [group.shows, theatreOrder]);
   const total = group.shows.length;
   const showGroups = expanded || total <= CHIP_LIMIT ? groups : trimGroups(groups, CHIP_LIMIT);
   const hidden = total - countShows(showGroups);
@@ -1191,10 +1292,12 @@ function aggregateUpcoming(shows: ApiShowtime[]): UpcomingBuckets {
 
 function UpcomingView({
   buckets,
+  theatreOrder,
   onHide,
   onClear,
 }: {
   buckets: UpcomingBuckets;
+  theatreOrder: readonly string[];
   onHide: (id: string, title: string) => void;
   onClear?: () => void;
 }) {
@@ -1228,7 +1331,7 @@ function UpcomingView({
           </h2>
           <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {buckets[s.key].map((it) => (
-              <UpcomingItemCard key={it.key} item={it} onHide={onHide} />
+              <UpcomingItemCard key={it.key} item={it} theatreOrder={theatreOrder} onHide={onHide} />
             ))}
           </div>
         </section>
@@ -1237,7 +1340,15 @@ function UpcomingView({
   );
 }
 
-function UpcomingItemCard({ item, onHide }: { item: UpcomingItem; onHide: (id: string, title: string) => void }) {
+function UpcomingItemCard({
+  item,
+  theatreOrder,
+  onHide,
+}: {
+  item: UpcomingItem;
+  theatreOrder: readonly string[];
+  onHide: (id: string, title: string) => void;
+}) {
   const router = useRouter();
   const { movie } = item;
   // A collapsed series opens its series page; a single film opens its movie page.
@@ -1252,7 +1363,10 @@ function UpcomingItemCard({ item, onHide }: { item: UpcomingItem; onHide: (id: s
   // Secondary line folds count + theatres together to save vertical space.
   const count = item.isSeries ? item.memberCount : item.playDates.length;
   const countWord = item.isSeries ? (count === 1 ? "event" : "events") : count === 1 ? "date" : "dates";
-  const theatres = item.theatres.map((t) => theatreLabel(t.slug, t.name)).join(" · ");
+  const theatres = [...item.theatres]
+    .sort((a, b) => theatreRank(a.slug, theatreOrder) - theatreRank(b.slug, theatreOrder))
+    .map((t) => theatreLabel(t.slug, t.name))
+    .join(" · ");
   const meta = [count > 1 ? `${count} ${countWord}` : "", theatres].filter(Boolean).join(" · ");
   const showRare = item.bucket === "rare" && !movie.isIndie && !movie.isForeign;
   const hasBadges =

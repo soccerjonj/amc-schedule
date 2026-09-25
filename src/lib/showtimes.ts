@@ -60,8 +60,9 @@ export function theatreLabel(slug: string, fallback: string): string {
   return THEATRE_LABEL[slug] ?? fallback;
 }
 
-// Fixed display order for theatre groups within a card (River East first, etc.).
-const THEATRE_ORDER = [
+// Default theatre display order (River East first, etc.). A visitor can set their
+// own order, saved per-browser — see useTheatreOrder().
+const DEFAULT_THEATRE_ORDER = [
   "amc-river-east-21",
   "amc-600-north-michigan-9",
   "amc-dine-in-block-37",
@@ -69,9 +70,13 @@ const THEATRE_ORDER = [
   "amc-newcity-14",
 ];
 
-function theatreRank(slug: string): number {
-  const i = THEATRE_ORDER.indexOf(slug);
-  return i === -1 ? THEATRE_ORDER.length : i; // unknown theatres sort last
+// Sort rank for a theatre: the visitor's custom order first, then the default
+// order for any theatre they haven't placed, then unknown theatres last.
+export function theatreRank(slug: string, order: readonly string[] = []): number {
+  const i = order.indexOf(slug);
+  if (i !== -1) return i;
+  const d = DEFAULT_THEATRE_ORDER.indexOf(slug);
+  return order.length + (d === -1 ? DEFAULT_THEATRE_ORDER.length : d);
 }
 
 // "7:00 PM" -> "7p", "7:30 PM" -> "7:30p", "11:30 AM" -> "11:30a".
@@ -158,7 +163,7 @@ export interface ShowGroup {
 
 // Group a movie's showtimes by theatre + format so the format label appears once
 // and each time renders as a tiny bare pill (several fit per row).
-export function groupShowtimes(shows: ApiShowtime[]): ShowGroup[] {
+export function groupShowtimes(shows: ApiShowtime[], order: readonly string[] = []): ShowGroup[] {
   const map = new Map<string, ShowGroup>();
   for (const s of shows) {
     const tag = formatTag(s.format);
@@ -174,9 +179,9 @@ export function groupShowtimes(shows: ApiShowtime[]): ShowGroup[] {
     const ca = isCaptionTag(a.tag) ? 1 : 0;
     const cb = isCaptionTag(b.tag) ? 1 : 0;
     if (ca !== cb) return ca - cb;
-    // Then a fixed theatre order (River East, 600 N Mich, Block 37, Roosevelt, NewCity).
-    const ra = theatreRank(a.theatre.slug);
-    const rb = theatreRank(b.theatre.slug);
+    // Then theatre order — the visitor's custom order, else the default.
+    const ra = theatreRank(a.theatre.slug, order);
+    const rb = theatreRank(b.theatre.slug, order);
     if (ra !== rb) return ra - rb;
     // Within the same theatre, earliest showtime first.
     return a.shows[0].startsAt < b.shows[0].startsAt ? -1 : 1;
