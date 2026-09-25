@@ -77,6 +77,8 @@ export interface IngestOptions {
   theatres?: TheatreRef[];
 }
 
+const MAX_CONSECUTIVE_FAILURES = 5;
+
 export async function ingest(opts: IngestOptions = {}) {
   const days = opts.days ?? 14;
   const theatres = opts.theatres ?? SEED_THEATRES;
@@ -92,6 +94,7 @@ export async function ingest(opts: IngestOptions = {}) {
   const provider = getProvider();
   await provider.open();
   const stats = { theatres: theatres.length, dates: dates.length, showtimes: 0, errors: 0 };
+  let consecutiveFailures = 0;
 
   try {
     for (const theatre of theatres) {
@@ -100,10 +103,21 @@ export async function ingest(opts: IngestOptions = {}) {
           const shows = await provider.getShowtimes(theatre, date);
           await persistDay(theatre, date, shows, yearByMovie);
           stats.showtimes += shows.length;
+          consecutiveFailures = 0;
           console.log(`  ${theatre.slug} ${date}: ${shows.length} showtimes`);
         } catch (err) {
+          // A failed day is skipped, so its existing showtimes are left untouched.
           stats.errors++;
+          consecutiveFailures++;
           console.warn(`  ! ${theatre.slug} ${date} failed:`, (err as Error).message);
+          // A run of failures means the source is down or blocking us — stop now
+          // with a clear error instead of grinding through every remaining page.
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            throw new Error(
+              `Aborting: ${consecutiveFailures} pages in a row failed (last: ${(err as Error).message}). ` +
+                `No existing showtimes were overwritten.`,
+            );
+          }
         }
       }
     }

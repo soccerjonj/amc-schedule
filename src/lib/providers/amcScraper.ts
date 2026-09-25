@@ -64,14 +64,31 @@ export class AmcScraperProvider implements ShowtimeProvider {
     if (!page) throw new Error("provider not opened");
     const url = `${BASE}/movie-theatres/${theatre.urlPath}/showtimes?date=${date}`;
     {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+      const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
       // The real showtimes page (past Cloudflare's waiting room) is ready when its
       // <h1> reads "Showtimes" — present on both populated AND empty days.
-      await page
+      const ready = await page
         .waitForFunction(() => document.querySelector("h1")?.textContent?.trim() === "Showtimes", {
           timeout: 30000,
         })
-        .catch(() => {});
+        .then(() => true)
+        .catch(() => false);
+      // If it never appeared we did NOT get showtimes — throw rather than return []
+      // so the caller skips this day instead of overwriting real data with nothing.
+      if (!ready) {
+        const blocked = await page
+          .evaluate(() =>
+            /just a moment|security verification|verify you are (a )?human/i.test(
+              `${document.title} ${document.body?.innerText ?? ""}`,
+            ),
+          )
+          .catch(() => false);
+        throw new Error(
+          blocked || resp?.status() === 403
+            ? `blocked by AMC bot check (HTTP ${resp?.status() ?? "?"})`
+            : `showtimes page did not load (HTTP ${resp?.status() ?? "?"})`,
+        );
+      }
       // Showtimes are server-rendered. Empty days say so explicitly — skip the
       // anchor wait there so far-out, mostly-empty dates return in ~2s instead of
       // timing out (~25s). Populated days have their anchors immediately.

@@ -1,0 +1,45 @@
+name: Restore showtimes from snapshot
+
+# Manually refill empty theatre-days (today onward) in the production DB from the
+# bundled snapshot of the last successful scrape. Never overwrites existing data.
+# Run with apply=false first to see what it would do.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Write to the database (false = dry run, report only)"
+        required: false
+        default: "false"
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PRISMA_DB_PROVIDER: postgresql
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Point Prisma at Postgres and generate client
+        run: |
+          node scripts/db-provider.mjs
+          npx prisma generate
+
+      - name: Restore
+        run: |
+          for i in 1 2 3; do
+            if npx tsx scripts/restore-snapshot.ts ${{ github.event.inputs.apply == 'true' && '--apply' || '' }}; then
+              exit 0
+            fi
+            echo "restore failed (attempt $i/3) — Neon may be waking; retrying in 15s..."
+            sleep 15
+          done
+          exit 1
