@@ -43,6 +43,17 @@ model Movie {
   letterboxdRating  Float? // aggregateRating.ratingValue, 0–5
   letterboxdUrl     String? // film page, for the rating badge link
   metadataCheckedAt DateTime? // last enrichment attempt (success or confident miss)
+  // From AMC's API (movie resource). Release dates here are AMC's — re-release
+  // dates for old films — so TMDB's releaseDate/releaseYear stay authoritative.
+  synopsis       String?
+  advisory       String? // e.g. photosensitivity warning split off the synopsis
+  cast           String?
+  directors      String?
+  genre          String?
+  trailerUrl     String? // embeddable AMC (Brightcove) player URL
+  amcPosterUrl   String? // AMC poster; fallback when TMDB has none
+  amcReleaseDate DateTime?
+  announced      Boolean   @default(false) // AMC "coming soon" with no showtimes anywhere yet
   showtimes      Showtime[]
 }
 
@@ -56,6 +67,10 @@ model Showtime {
   format          String? // e.g. "Dolby Cinema at AMC Prime", "Laser at AMC"
   ticketUrl       String
   aListExcluded   Boolean  @default(false) // AMC "Excluded from A-List" on this showing
+  soldOut         Boolean  @default(false)
+  almostSoldOut   Boolean  @default(false)
+  price           Float? // adult ticket price before tax/fees (AMC API)
+  discount        String? // e.g. "20% OFF" on discounted matinees
   sourceUpdatedAt DateTime @updatedAt
 
   @@index([startsAt])

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { DateTime } from "luxon";
 import {
   type Movie,
+  type MovieDetail,
   type ApiShowtime,
   type ApiResponse,
   type ShowGroup,
@@ -44,6 +45,7 @@ const MONTH_SPAN = 28; // days in the rolling month grid (4 rows of 7); keep a m
 const GEM_PREVIEW = 4; // gem titles shown per day cell before "+N more"
 const UPCOMING_SPAN = 90; // days the Upcoming feed scans (the full scrape horizon)
 const RARE_DAYS = 3; // ≤ this many distinct play-dates across the horizon ⇒ rare (window-stable)
+const ANNOUNCED_PREVIEW = 8; // announced films shown before "Show all"
 
 type Mode = "week" | "month" | "upcoming";
 
@@ -152,6 +154,7 @@ function Calendar() {
     if (selectedTheatres.length) p.set("theatres", selectedTheatres.join(","));
     if (selectedFormats.length) p.set("fmt", selectedFormats.join(","));
     if (debouncedQuery) p.set("q", debouncedQuery);
+    if (mode === "upcoming") p.set("announced", "1");
     const ac = new AbortController();
     setLoading(true);
     setError(false);
@@ -187,6 +190,13 @@ function Calendar() {
     [data, hidden, aListOnly],
   );
   const byDay = useMemo(() => groupByDay(visibleShowtimes), [visibleShowtimes]);
+  // Announced films (no showtimes anywhere yet) — only in the unfiltered feed, since
+  // they have no theatre/format/category data to filter on.
+  const announced = useMemo(() => {
+    if (category !== "all" || selectedFormats.length || selectedTheatres.length) return [];
+    const q = debouncedQuery.toLowerCase();
+    return (data?.announced ?? []).filter((m) => !hidden.has(m.id) && (!q || m.title.toLowerCase().includes(q)));
+  }, [data, hidden, category, selectedFormats, selectedTheatres, debouncedQuery]);
   const upcomingBuckets = useMemo(
     () => (mode === "upcoming" ? aggregateUpcoming(visibleShowtimes) : EMPTY_UPCOMING),
     [mode, visibleShowtimes],
@@ -549,6 +559,7 @@ function Calendar() {
         ) : mode === "upcoming" ? (
           <UpcomingView
             buckets={upcomingBuckets}
+            announced={announced}
             theatreOrder={theatreOrder}
             onHide={hideMovie}
             onClear={anyFilter ? clearFilters : undefined}
@@ -1306,17 +1317,45 @@ function aggregateUpcoming(shows: ApiShowtime[]): UpcomingBuckets {
 
 function UpcomingView({
   buckets,
+  announced,
   theatreOrder,
   onHide,
   onClear,
 }: {
   buckets: UpcomingBuckets;
+  announced: MovieDetail[];
   theatreOrder: readonly string[];
   onHide: (id: string, title: string) => void;
   onClear?: () => void;
 }) {
   const sections = UPCOMING_SECTIONS.filter((s) => buckets[s.key].length > 0);
-  if (sections.length === 0) {
+  const [showAllAnnounced, setShowAllAnnounced] = useState(false);
+  const shownAnnounced = showAllAnnounced ? announced : announced.slice(0, ANNOUNCED_PREVIEW);
+  const announcedSection = announced.length > 0 && (
+    <section key="announced" aria-label="Announced">
+      <h2 className="mb-2 flex items-baseline gap-2">
+        <span className="font-display text-sm font-semibold uppercase tracking-[0.12em] text-ink">Announced</span>
+        <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink-2">
+          {announced.length}
+        </span>
+        <span className="text-[11px] text-ink-3">coming to AMC — showtimes not posted yet</span>
+      </h2>
+      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {shownAnnounced.map((m) => (
+          <AnnouncedCard key={m.id} movie={m} />
+        ))}
+      </div>
+      {announced.length > ANNOUNCED_PREVIEW && (
+        <button
+          onClick={() => setShowAllAnnounced((v) => !v)}
+          className="mt-1.5 text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          {showAllAnnounced ? "Show fewer" : `Show all ${announced.length}`}
+        </button>
+      )}
+    </section>
+  );
+  if (sections.length === 0 && !announcedSection) {
     return (
       <div className="mt-10 flex flex-col items-center gap-3 text-center">
         <p className="text-sm text-ink-3">No upcoming highlights in the next 90 days.</p>
@@ -1333,7 +1372,9 @@ function UpcomingView({
   }
   return (
     <div className="flex flex-col gap-5">
-      {sections.map((s) => (
+      {/* Announced films slot in right after "Opening soon" (or first, if none). */}
+      {!sections.some((s) => s.key === "opening") && announcedSection}
+      {sections.map((s) => [
         <section key={s.key} aria-label={s.label}>
           <h2 className="mb-2 flex items-baseline gap-2">
             <span className="font-display text-sm font-semibold uppercase tracking-[0.12em] text-ink">
@@ -1348,9 +1389,31 @@ function UpcomingView({
               <UpcomingItemCard key={it.key} item={it} theatreOrder={theatreOrder} onHide={onHide} />
             ))}
           </div>
-        </section>
-      ))}
+        </section>,
+        s.key === "opening" ? announcedSection : null,
+      ])}
     </div>
+  );
+}
+
+// A film AMC has announced but not scheduled anywhere yet.
+function AnnouncedCard({ movie }: { movie: MovieDetail }) {
+  const date = movie.amcReleaseDate ? DateTime.fromISO(movie.amcReleaseDate).toFormat("ccc, LLL d") : null;
+  const meta = [movie.genre, movie.rating].filter(Boolean).join(" · ");
+  return (
+    <Link
+      href={`/movie/${movie.id}`}
+      className="group flex gap-2 rounded-lg border border-dashed border-line-2 bg-surface p-1.5 text-left transition hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <Poster movie={movie} sizeCls="w-12" />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <h3 className="text-[13px] font-semibold leading-tight text-ink [overflow-wrap:normal] line-clamp-2">
+          {displayTitle(movie.title)}
+        </h3>
+        {date && <p className="text-[11px] font-semibold text-accent">Releases {date}</p>}
+        <p className="text-[11px] text-ink-3">{meta ? `${meta} · ` : ""}showtimes not posted yet</p>
+      </div>
+    </Link>
   );
 }
 

@@ -7,7 +7,8 @@ name: Scrape AMC showtimes
 # Actions tab via run-workflow.
 on:
   schedule:
-    - cron: "0 9 * * *" # once a day, 09:00 UTC (~4am Chicago)
+    - cron: "0 9 * * *" # daily refresh + snapshot commit, 09:00 UTC (~4am Chicago)
+    - cron: "0 3,15,21 * * *" # extra refreshes ~every 6h so sold-out status stays current
   workflow_dispatch:
     inputs:
       days:
@@ -93,9 +94,11 @@ jobs:
       # the freshly-scraped DB. [skip ci] avoids triggering a Vercel redeploy,
       # since the live app reads from the DB, not this snapshot.
       - name: Refresh bundled snapshot
+        if: github.event_name != 'schedule' || github.event.schedule == '0 9 * * *'
         run: npm run snapshot
 
       - name: Commit snapshot if changed
+        if: github.event_name != 'schedule' || github.event.schedule == '0 9 * * *'
         run: |
           if git diff --quiet -- src/data/snapshot.json; then
             echo "snapshot unchanged — nothing to commit"

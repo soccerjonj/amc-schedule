@@ -12,6 +12,7 @@ import {
   type ApiResponse,
   type ApiShowtime,
   type Movie,
+  type MovieDetail,
   type ShowGroup,
   TZ,
   todayISO,
@@ -41,6 +42,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   const router = useRouter();
   const [allShows, setShows] = useState<ApiShowtime[] | null>(null);
   const [error, setError] = useState(false);
+  const [detail, setDetail] = useState<MovieDetail | null>(null);
   const { order: theatreOrder } = useTheatreOrder();
   const { aListOnly, setAListOnly } = useAListOnly();
   // With "A-List only" on, drop showings AMC excludes from A-List.
@@ -61,6 +63,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
         : `days=90&start=${start}`;
     setError(false);
     setShows(null);
+    setDetail(null);
     fetch(`/api/showtimes?${qs}`, { signal: ac.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -68,6 +71,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
       })
       .then((d: ApiResponse) => {
         const all = d.showtimes;
+        setDetail(d.movie ?? null);
         setShows(kind === "series" ? all.filter((s) => seriesOf(s.movie.title)?.key === param) : all);
       })
       .catch((e: unknown) => {
@@ -90,7 +94,10 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
     return [...m.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
   }, [shows]);
 
-  const rep: Movie | null = shows && shows.length ? shows[0].movie : null;
+  // The film's own record (with synopsis, cast…) when we have it; else the first showtime's.
+  const rep: Movie | null = (kind === "movie" ? detail : null) ?? (shows && shows.length ? shows[0].movie : null);
+  const upcomingRelease =
+    detail?.amcReleaseDate && detail.amcReleaseDate >= todayISO() ? detail.amcReleaseDate : null;
   const distinctMovies = useMemo(() => new Set((shows ?? []).map((s) => s.movie.id)).size, [shows]);
   const title = series ? series.label : rep ? displayTitle(rep.title) : "";
   const releaseYear = rep?.releaseDate ? rep.releaseDate.slice(0, 4) : null;
@@ -113,7 +120,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
     if (rep?.rating) metaParts.push(rep.rating);
     if (rep?.runtimeMinutes) metaParts.push(detailRuntime(rep.runtimeMinutes));
   }
-  if (shows) metaParts.push(`${shows.length} showtime${shows.length === 1 ? "" : "s"} · ${days.length} day${days.length === 1 ? "" : "s"}`);
+  if (shows && shows.length) metaParts.push(`${shows.length} showtime${shows.length === 1 ? "" : "s"} · ${days.length} day${days.length === 1 ? "" : "s"}`);
 
   return (
     <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-4">
@@ -133,7 +140,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
         </div>
       ) : !shows ? (
         <p className="py-20 text-center text-sm text-ink-3">Loading…</p>
-      ) : shows.length === 0 ? (
+      ) : shows.length === 0 && !rep ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">
           <p className="text-sm text-ink-3">
             {aListHidden > 0
@@ -166,6 +173,11 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
                   {rep.isSpecialEvent && <Badge tone="special">Special</Badge>}
                   {rep.isIndie && <Badge tone="indie">Indie</Badge>}
                   {rep.isForeign && <Badge tone="foreign">Foreign</Badge>}
+                  {detail?.genre && (
+                    <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-ink-2">
+                      {detail.genre}
+                    </span>
+                  )}
                 </div>
               )}
               {metaParts.length > 0 && <p className="text-sm text-ink-3">{metaParts.join(" · ")}</p>}
@@ -213,6 +225,25 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
             </div>
           </header>
 
+          {kind === "movie" && detail && <MovieInfo detail={detail} />}
+
+          {shows.length === 0 && (
+            <div className="flex flex-col items-start gap-2 rounded-xl border border-line bg-surface px-4 py-5">
+              <p className="text-sm text-ink-2">
+                {aListHidden > 0
+                  ? `All ${aListHidden} upcoming showings are excluded from A-List.`
+                  : upcomingRelease
+                    ? `Announced for ${DateTime.fromISO(upcomingRelease).toFormat("cccc, LLL d")} — AMC hasn't posted showtimes yet.`
+                    : "No upcoming showtimes at these theatres."}
+              </p>
+              {aListHidden > 0 && (
+                <button onClick={() => setAListOnly(false)} className="text-sm font-medium text-accent hover:underline">
+                  Show them anyway
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Day-card grid — mirrors the website's week view: one bordered column
               per playing date, with the showtimes (theatre + format + chips) inside. */}
           <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7">
@@ -229,6 +260,69 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
         </>
       )}
     </main>
+  );
+}
+
+// Synopsis, viewer advisory, cast, director and trailer from AMC.
+function MovieInfo({ detail }: { detail: MovieDetail }) {
+  const [expanded, setExpanded] = useState(false);
+  const [showTrailer, setShowTrailer] = useState(false);
+  const long = (detail.synopsis?.length ?? 0) > 320;
+  if (!detail.synopsis && !detail.cast && !detail.directors && !detail.trailerUrl && !detail.advisory) return null;
+  return (
+    <section aria-label="About this film" className="mb-4 flex max-w-3xl flex-col gap-2">
+      {detail.advisory && (
+        <p className="flex gap-1.5 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-2.5 py-1.5 text-xs text-amber-200/90">
+          <span aria-hidden="true">⚠︎</span>
+          <span>{detail.advisory}</span>
+        </p>
+      )}
+      {detail.synopsis && (
+        <div>
+          <p className={`text-sm leading-relaxed text-ink-2 ${long && !expanded ? "line-clamp-4" : ""}`}>{detail.synopsis}</p>
+          {long && (
+            <button onClick={() => setExpanded((v) => !v)} className="mt-0.5 text-xs font-medium text-accent hover:underline">
+              {expanded ? "Less" : "More"}
+            </button>
+          )}
+        </div>
+      )}
+      {(detail.cast || detail.directors) && (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
+          {detail.cast && (
+            <>
+              <dt className="text-ink-3">Starring</dt>
+              <dd className="text-ink-2">{detail.cast}</dd>
+            </>
+          )}
+          {detail.directors && (
+            <>
+              <dt className="text-ink-3">Directed by</dt>
+              <dd className="text-ink-2">{detail.directors}</dd>
+            </>
+          )}
+        </dl>
+      )}
+      {detail.trailerUrl &&
+        (showTrailer ? (
+          <div className="aspect-video w-full overflow-hidden rounded-lg border border-line bg-black">
+            <iframe
+              src={detail.trailerUrl}
+              title={`${detail.title} trailer`}
+              allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+              allowFullScreen
+              className="h-full w-full"
+            />
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowTrailer(true)}
+            className="inline-flex w-fit items-center gap-1.5 rounded-full border border-line-2 px-3 py-1.5 text-sm text-ink-2 transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            ▶ Watch trailer
+          </button>
+        ))}
+    </section>
   );
 }
 

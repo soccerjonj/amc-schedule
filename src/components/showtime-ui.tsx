@@ -159,21 +159,39 @@ export function TimeChip({
   dayLabel: string;
 }) {
   const tag = formatTag(s.format);
+  // Status details shown on hover and read to screen readers.
+  const notes = [
+    s.soldOut ? "Sold out" : s.almostSoldOut ? "Almost sold out" : "",
+    s.discount ? `${s.discount.toLowerCase()} matinee` : "",
+    s.price != null ? `Adult $${s.price.toFixed(2)} + tax` : "",
+    s.aListExcluded ? "Not eligible for A-List" : "",
+  ].filter(Boolean);
   const label = `Buy tickets for ${movieTitle} at ${s.theatre.name}, ${dayLabel} ${s.time}${
     tag ? `, ${tag}` : ""
-  }${s.aListExcluded ? ", not eligible for A-List" : ""} — opens AMC in a new tab`;
+  }${notes.length ? `. ${notes.join(". ")}` : ""} — opens AMC in a new tab`;
   return (
     <a
       href={s.ticketUrl}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={label}
-      title={s.aListExcluded ? "Not eligible for A-List" : undefined}
-      className={`inline-flex items-center rounded border bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-        s.aListExcluded ? "border-dashed border-ink-3/60 text-ink-2" : "border-line text-ink"
-      }`}
+      title={notes.length ? notes.join(" · ") : undefined}
+      className={`relative inline-flex items-center rounded border bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        s.aListExcluded ? "border-dashed border-ink-3/60" : "border-line"
+      } ${s.soldOut ? "text-ink-3 line-through opacity-60" : s.aListExcluded ? "text-ink-2" : "text-ink"}`}
     >
       {compactTime(s.time)}
+      {s.discount && !s.soldOut && (
+        <span aria-hidden="true" className="ml-0.5 text-[9px] font-bold text-emerald-400">
+          %
+        </span>
+      )}
+      {s.almostSoldOut && !s.soldOut && (
+        <span
+          aria-hidden="true"
+          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-orange-400 ring-1 ring-bg"
+        />
+      )}
     </a>
   );
 }

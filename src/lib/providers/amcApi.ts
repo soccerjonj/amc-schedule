@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import { THEATRE_TIMEZONE } from "../theatres";
-import type { RawShowtime, ShowtimeProvider, TheatreRef } from "./types";
+import type { AnnouncedMovie, MovieDetails, RawShowtime, ShowtimeProvider, TheatreRef } from "./types";
 
 // AMC's official catalog API (https://developers.amctheatres.com). Replaces the
 // Playwright scraper now that amctheatres.com sits behind a Cloudflare bot check.
@@ -32,6 +32,32 @@ export interface ApiShowtime {
   runTime?: number | null;
   mpaaRating?: string | null;
   isCanceled?: boolean;
+  isSoldOut?: boolean;
+  isAlmostSoldOut?: boolean;
+  isDiscountMatineePriced?: boolean;
+  discountMatineeMessage?: string | null;
+  ticketPrices?: { price?: number; type?: string }[];
+}
+
+/** The subset of AMC's v2 movie resource we use. */
+export interface ApiMovie {
+  id: number;
+  name: string;
+  slug?: string;
+  synopsis?: string | null;
+  starringActors?: string | null;
+  directors?: string | null;
+  genre?: string | null;
+  mpaaRating?: string | null;
+  runTime?: number | null;
+  releaseDateUtc?: string | null;
+  hasScheduledShowtimes?: boolean;
+  media?: {
+    posterDynamic?: string | null;
+    primaryTrailerExternalVideoId?: string | null;
+    trailerMp4?: string | null;
+    trailerHd?: string | null;
+  };
 }
 
 interface ApiPage {
@@ -104,6 +130,74 @@ export function normalizeMpaa(r: string | null | undefined): string | undefined 
   return v;
 }
 
+// Our movie id is the numeric suffix of AMC's website slug ("dune-part-three-80123"
+// → "80123"), matching what the scraper stored, so ids stay stable across sources.
+function movieIdFromSlug(slug: string | undefined, fallback: number): string {
+  const m = slug?.match(/-(\d+)$/);
+  return m ? m[1] : String(fallback);
+}
+
+// AMC prepends viewer advisories to some synopses ("AMC has been advised that this
+// film contains sequences with flashing lights…"). Peel them off into their own
+// field so the synopsis reads as a synopsis.
+const ADVISORY_LEAD = /^\s*((?:AMC has been advised|Please note|Viewer (?:advisory|discretion))[^.!?]*[.!?])\s*/i;
+export function splitAdvisory(text: string | null | undefined): { synopsis?: string; advisory?: string } {
+  let rest = (text ?? "").trim();
+  const advisories: string[] = [];
+  for (let m = rest.match(ADVISORY_LEAD); m; m = rest.match(ADVISORY_LEAD)) {
+    advisories.push(m[1].trim());
+    rest = rest.slice(m[0].length).trim();
+  }
+  return { synopsis: rest || undefined, advisory: advisories.join(" ") || undefined };
+}
+
+// AMC mixes "JOHN CENA, LANA CONDOR, Will Forte". Title-case the shouty names,
+// keeping initials/stage names with periods ("H.E.R.") as given.
+function titleCaseWord(w: string): string {
+  if (w.includes(".") || !/[A-Z]/.test(w) || w !== w.toUpperCase()) return w;
+  const lower = w.toLowerCase();
+  return lower
+    .replace(/(^|[-'’])([a-z])/g, (_m, p: string, c: string) => p + c.toUpperCase())
+    .replace(/^Mc([a-z])/, (_m, c: string) => "Mc" + c.toUpperCase());
+}
+export function tidyNames(list: string | null | undefined): string | undefined {
+  const names = (list ?? "")
+    .split(",")
+    .map((n) => n.trim().split(/\s+/).map(titleCaseWord).join(" "))
+    .filter(Boolean);
+  return names.length ? names.join(", ") : undefined;
+}
+export function tidyGenre(g: string | null | undefined): string | undefined {
+  const v = (g ?? "").trim();
+  return v ? v.charAt(0).toUpperCase() + v.slice(1).toLowerCase() : undefined;
+}
+
+// Announced-list filters: placeholder listings ("Untitled A24 (11/6/2026)",
+// "UFC 335: TBD vs. TBD", "Secret Variance Event") and imminent unscheduled titles.
+const PLACEHOLDER_TITLE = /^untitled\b|\btbd\b|\bsecret\b.*\bevent\b|private\s+theat(re|er)\s+rental/i;
+const ANNOUNCED_MIN_LEAD_DAYS = 7;
+
+// AMC trailers play through its Brightcove player (the raw .mp4 links 403).
+const BRIGHTCOVE_ACCOUNT = "1655482053001";
+function trailerEmbedUrl(media: ApiMovie["media"]): string | undefined {
+  const id = media?.primaryTrailerExternalVideoId?.trim();
+  if (!id || !/^\d+$/.test(id)) return undefined;
+  const acct = (media?.trailerMp4 ?? media?.trailerHd ?? "").match(/\/(\d{10,})\/\d+\.mp4/)?.[1] ?? BRIGHTCOVE_ACCOUNT;
+  return `https://players.brightcove.net/${acct}/default_default/index.html?videoId=${id}`;
+}
+
+/** Map an AMC movie resource to our MovieDetails. */
+export function mapApiMovieDetails(m: ApiMovie): MovieDetails {
+  return {
+    ...splitAdvisory(m.synopsis),
+    cast: tidyNames(m.starringActors),
+    directors: tidyNames(m.directors),
+    genre: tidyGenre(m.genre),
+    trailerUrl: trailerEmbedUrl(m.media),
+    posterUrl: m.media?.posterDynamic?.trim() || undefined,
+  };
+}
+
 /** Theatre-local calendar date (YYYY-MM-DD) a showtime belongs to. */
 export function localDateOf(s: ApiShowtime): string {
   if (s.showDateTimeLocal && /^\d{4}-\d{2}-\d{2}/.test(s.showDateTimeLocal)) {
@@ -122,12 +216,12 @@ export function mapApiShowtime(s: ApiShowtime): RawShowtime | null {
   if (s.isCanceled) return null;
   const urlSlug = s.movieUrl?.split("?")[0].replace(/\/+$/, "").split("/").pop();
   const movieSlug = urlSlug || `${slugify(s.movieName)}-${s.movieId}`;
-  const suffix = movieSlug.match(/-(\d+)$/);
+
   const attrs = (s.attributes ?? []).map((a) => (a.name ?? a.code ?? "").trim()).filter(Boolean);
   const format = deriveFormat(s.premiumFormat, attrs);
   return {
     showtimeId: String(s.id),
-    movieId: suffix ? suffix[1] : String(s.movieId),
+    movieId: movieIdFromSlug(movieSlug, s.movieId),
     movieSlug,
     movieTitle: s.movieName.trim(),
     startsAt: new Date(s.showDateTimeUtc),
@@ -137,6 +231,10 @@ export function mapApiShowtime(s: ApiShowtime): RawShowtime | null {
     attributes: attrs,
     mpaaRating: normalizeMpaa(s.mpaaRating),
     runtimeMinutes: s.runTime && s.runTime > 0 ? s.runTime : undefined,
+    soldOut: !!s.isSoldOut,
+    almostSoldOut: !s.isSoldOut && !!s.isAlmostSoldOut,
+    price: (s.ticketPrices?.find((t) => t.type === "ADULT") ?? s.ticketPrices?.[0])?.price ?? undefined,
+    discount: (s.isDiscountMatineePriced && s.discountMatineeMessage?.trim()) || undefined,
   };
 }
 
@@ -145,6 +243,8 @@ export class AmcApiProvider implements ShowtimeProvider {
   private key = "";
   private lastCall = 0;
   private theatreIds = new Map<string, number>();
+  // Our movie id → AMC's numeric movie id, recorded as showtimes are mapped.
+  private apiMovieIds = new Map<string, number>();
   // Per-theatre showtimes grouped by local date, fetched once per run.
   private byTheatre = new Map<string, Promise<Map<string, RawShowtime[]>>>();
 
@@ -224,6 +324,7 @@ export class AmcApiProvider implements ShowtimeProvider {
     for (const s of raw) {
       const mapped = mapApiShowtime(s);
       if (!mapped) continue;
+      this.apiMovieIds.set(mapped.movieId, s.movieId);
       const day = localDateOf(s);
       (byDate.get(day) ?? byDate.set(day, []).get(day)!).push(mapped);
     }
@@ -240,5 +341,52 @@ export class AmcApiProvider implements ShowtimeProvider {
     }
     const byDate = await p; // throws on fetch failure → ingest skips the day (no wipe)
     return byDate.get(date) ?? [];
+  }
+
+  /** Synopsis, cast, trailer, poster… for movies seen this run (batched). */
+  async getMovieDetails(movieIds: string[]): Promise<Map<string, MovieDetails>> {
+    const apiIds = [...new Set(movieIds.map((id) => this.apiMovieIds.get(id)).filter((n): n is number => !!n))];
+    const out = new Map<string, MovieDetails>();
+    for (let i = 0; i < apiIds.length; i += 50) {
+      const batch = apiIds.slice(i, i + 50);
+      const data = await this.get<{ _embedded?: { movies?: ApiMovie[] } }>(
+        `/v2/movies?ids=${batch.join(",")}&page-size=100`,
+      );
+      for (const m of data._embedded?.movies ?? []) out.set(movieIdFromSlug(m.slug, m.id), mapApiMovieDetails(m));
+    }
+    return out;
+  }
+
+  /** AMC "coming soon" films with no showtimes posted anywhere yet. */
+  async getAnnounced(days: number): Promise<AnnouncedMovie[]> {
+    const today = DateTime.now().setZone(THEATRE_TIMEZONE).startOf("day");
+    // A film due within the week that still has no showtimes anywhere almost never
+    // gets them (limited/regional releases), so only look further out.
+    const from = today.plus({ days: ANNOUNCED_MIN_LEAD_DAYS });
+    const until = today.plus({ days });
+    const out: AnnouncedMovie[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const data = await this.get<{ count?: number; _embedded?: { movies?: ApiMovie[] }; _links?: { next?: unknown } }>(
+        `/v2/movies/views/coming-soon?page-size=100&page-number=${page}`,
+      );
+      for (const m of data._embedded?.movies ?? []) {
+        if (m.hasScheduledShowtimes || !m.releaseDateUtc || PLACEHOLDER_TITLE.test(m.name)) continue;
+        const rel = DateTime.fromISO(m.releaseDateUtc, { zone: "utc" }).setZone(THEATRE_TIMEZONE);
+        if (!rel.isValid || rel < from || rel >= until) continue;
+        out.push({
+          id: movieIdFromSlug(m.slug, m.id),
+          slug: m.slug || `${slugify(m.name)}-${m.id}`,
+          title: m.name.trim(),
+          releaseDate: rel.toJSDate(),
+          mpaaRating: normalizeMpaa(m.mpaaRating),
+          runtimeMinutes: m.runTime && m.runTime > 0 ? m.runTime : undefined,
+          ...mapApiMovieDetails(m),
+        });
+      }
+      // Movie views don't always send _links.next — page by the total count.
+      const got = (data._embedded?.movies ?? []).length;
+      if (got === 0 || page * 100 >= (data.count ?? 0)) break;
+    }
+    return out;
   }
 }

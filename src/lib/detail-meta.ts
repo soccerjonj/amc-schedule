@@ -14,13 +14,19 @@ interface MetaInfo {
 
 const SITE = "AMC Showtimes Chicago";
 
+// Per-movie details (incl. announced films with no showtimes); absent in older snapshots.
+const details = (snapshot as unknown as {
+  movieDetails?: Record<string, { title: string; posterUrl: string | null; synopsis: string | null }>;
+}).movieDetails;
+
 export function movieMeta(id: string): MetaInfo {
-  const m = snapshot.showtimes.find((s) => s.movieId === id)?.movie;
+  const d = details?.[id];
+  const m = d ?? snapshot.showtimes.find((s) => s.movieId === id)?.movie;
   if (!m) return { title: SITE, description: "Easy-to-miss movie screenings across downtown Chicago AMC theatres.", image: null };
   const t = displayTitle(m.title);
   return {
     title: `${t} — ${SITE}`,
-    description: `Showtimes for ${t} across downtown Chicago AMC theatres.`,
+    description: d?.synopsis ?? `Showtimes for ${t} across downtown Chicago AMC theatres.`,
     image: m.posterUrl ?? null,
   };
 }

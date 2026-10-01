@@ -39,6 +39,10 @@ interface Row {
   format: string | null;
   ticketUrl: string;
   aListExcluded: boolean;
+  soldOut: boolean;
+  almostSoldOut: boolean;
+  price: number | null;
+  discount: string | null;
   movie: {
     id: string;
     title: string;
@@ -52,6 +56,7 @@ interface Row {
     rating: string | null; // MPAA, e.g. "PG-13"
     runtimeMinutes: number | null;
     posterUrl: string | null;
+    amcPosterUrl: string | null; // AMC art, used when TMDB has none
     letterboxdRating: number | null;
     letterboxdUrl: string | null;
   };
@@ -103,8 +108,13 @@ async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug:
       ticketUrl: s.ticketUrl,
       // Older snapshots predate some fields — tolerate their absence.
       aListExcluded: (s as { aListExcluded?: boolean }).aListExcluded ?? false,
+      soldOut: (s as { soldOut?: boolean }).soldOut ?? false,
+      almostSoldOut: (s as { almostSoldOut?: boolean }).almostSoldOut ?? false,
+      price: (s as { price?: number | null }).price ?? null,
+      discount: (s as { discount?: string | null }).discount ?? null,
       movie: {
         ...s.movie,
+        amcPosterUrl: null, // the snapshot stores the already-resolved posterUrl
         releaseDate: (s.movie as { releaseDate?: string | null }).releaseDate ?? null,
         rating: (s.movie as { rating?: string | null }).rating ?? null,
         runtimeMinutes: (s.movie as { runtimeMinutes?: number | null }).runtimeMinutes ?? null,
@@ -171,6 +181,10 @@ export async function GET(req: NextRequest) {
       format: r.format,
       ticketUrl: r.ticketUrl,
       aListExcluded: r.aListExcluded,
+      soldOut: r.soldOut,
+      almostSoldOut: r.almostSoldOut,
+      price: r.price,
+      discount: r.discount,
       movie: {
         id: r.movie.id,
         title: r.movie.title,
@@ -185,7 +199,7 @@ export async function GET(req: NextRequest) {
           : null,
         rating: r.movie.rating,
         runtimeMinutes: r.movie.runtimeMinutes,
-        posterUrl: r.movie.posterUrl,
+        posterUrl: r.movie.posterUrl ?? r.movie.amcPosterUrl,
         letterboxdRating: r.movie.letterboxdRating,
         letterboxdUrl: r.movie.letterboxdUrl,
       },
@@ -219,6 +233,12 @@ export async function GET(req: NextRequest) {
   const dayKeys: string[] = [];
   for (let i = 0; i < days; i++) dayKeys.push(start.plus({ days: i }).toISODate()!);
 
+  // Detail pages (?movieId=) also get the film's own record — synopsis, cast,
+  // trailer… — even when it has no showtimes yet (announced films).
+  const movie = movieId ? await loadMovieDetail(movieId) : undefined;
+  // The Upcoming feed (?announced=1) also lists films announced with no showtimes.
+  const announced = sp.get("announced") === "1" ? await loadAnnounced(start.toJSDate(), end.toJSDate()) : undefined;
+
   return NextResponse.json(
     {
       start: start.toISODate(),
@@ -227,7 +247,91 @@ export async function GET(req: NextRequest) {
       theatres,
       showtimes: filtered,
       total: filtered.length,
+      ...(movie !== undefined ? { movie } : {}),
+      ...(announced ? { announced } : {}),
     },
     { headers: CORS_HEADERS },
   );
+}
+
+// Extra, optional snapshot sections (older snapshots don't have them).
+type SnapMovieDetail = Record<string, unknown> & { id: string; title: string };
+const snapExtras = snapshot as unknown as {
+  movieDetails?: Record<string, SnapMovieDetail>;
+  announced?: (SnapMovieDetail & { amcReleaseDate: string })[];
+};
+
+const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+
+function movieOut(m: {
+  id: string;
+  title: string;
+  slug: string;
+  isClassic: boolean;
+  isSpecialEvent: boolean;
+  isIndie: boolean;
+  isForeign: boolean;
+  releaseDate: Date | string | null;
+  rating: string | null;
+  runtimeMinutes: number | null;
+  posterUrl: string | null;
+  amcPosterUrl?: string | null;
+  letterboxdRating: number | null;
+  letterboxdUrl: string | null;
+  synopsis?: string | null;
+  advisory?: string | null;
+  cast?: string | null;
+  directors?: string | null;
+  genre?: string | null;
+  trailerUrl?: string | null;
+  amcReleaseDate?: Date | string | null;
+}) {
+  return {
+    id: m.id,
+    title: m.title,
+    slug: m.slug,
+    isClassic: m.isClassic,
+    isSpecialEvent: m.isSpecialEvent,
+    isIndie: m.isIndie,
+    isForeign: m.isForeign,
+    isRare: false,
+    releaseDate: iso(m.releaseDate),
+    rating: m.rating,
+    runtimeMinutes: m.runtimeMinutes,
+    posterUrl: m.posterUrl ?? m.amcPosterUrl ?? null,
+    letterboxdRating: m.letterboxdRating,
+    letterboxdUrl: m.letterboxdUrl,
+    synopsis: m.synopsis ?? null,
+    advisory: m.advisory ?? null,
+    cast: m.cast ?? null,
+    directors: m.directors ?? null,
+    genre: m.genre ?? null,
+    trailerUrl: m.trailerUrl ?? null,
+    amcReleaseDate: iso(m.amcReleaseDate),
+  };
+}
+
+async function loadMovieDetail(id: string) {
+  if (process.env.DATABASE_URL) {
+    const m = await prisma.movie.findUnique({ where: { id } });
+    return m ? movieOut(m) : null;
+  }
+  const m = snapExtras.movieDetails?.[id];
+  return m ? movieOut(m as unknown as Parameters<typeof movieOut>[0]) : null;
+}
+
+async function loadAnnounced(start: Date, end: Date) {
+  if (process.env.DATABASE_URL) {
+    const ms = await prisma.movie.findMany({
+      where: { announced: true, amcReleaseDate: { gte: start, lt: end } },
+      orderBy: { amcReleaseDate: "asc" },
+    });
+    return ms.filter((m) => !isHiddenTitle(m.title)).map(movieOut);
+  }
+  return (snapExtras.announced ?? [])
+    .filter((m) => {
+      const t = new Date(m.amcReleaseDate);
+      return t >= start && t < end;
+    })
+    .map((m) => movieOut(m as unknown as Parameters<typeof movieOut>[0]));
 }

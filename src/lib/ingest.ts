@@ -4,7 +4,7 @@ import { classify, isHiddenTitle } from "./classify";
 import { enrichMovies } from "./enrich";
 import { getProvider } from "./providers";
 import { SEED_THEATRES, THEATRE_TIMEZONE } from "./theatres";
-import type { RawShowtime, TheatreRef } from "./providers/types";
+import type { AnnouncedMovie, MovieDetails, RawShowtime, ShowtimeProvider, TheatreRef } from "./providers/types";
 
 export function dateWindow(days: number, startOffset = 0): string[] {
   const out: string[] = [];
@@ -105,6 +105,7 @@ export async function ingest(opts: IngestOptions = {}) {
   await provider.open();
   const stats = { theatres: theatres.length, dates: dates.length, showtimes: 0, errors: 0 };
   let consecutiveFailures = 0;
+  const seenMovies = new Set<string>();
 
   try {
     for (const theatre of theatres) {
@@ -112,6 +113,7 @@ export async function ingest(opts: IngestOptions = {}) {
         try {
           const shows = await provider.getShowtimes(theatre, date);
           await persistDay(theatre, date, shows, yearByMovie);
+          for (const s of shows) seenMovies.add(s.movieId);
           stats.showtimes += shows.length;
           consecutiveFailures = 0;
           console.log(`  ${theatre.slug} ${date}: ${shows.length} showtimes`);
@@ -131,9 +133,15 @@ export async function ingest(opts: IngestOptions = {}) {
         }
       }
     }
+    // Extras the provider may offer (AMC API). Each is best-effort: a failure here
+    // never fails the run or touches showtimes.
+    await attachMovieDetails(provider, [...seenMovies]);
+    await refreshAnnounced(provider, ANNOUNCED_HORIZON_DAYS);
   } finally {
     await provider.close();
   }
+
+  await trimOldShowtimes();
 
   // Enrich posters/ratings after the provider is closed. Gated on a TMDB key so
   // keyless local scrapes still succeed (metadata just stays null). Never let
@@ -148,6 +156,85 @@ export async function ingest(opts: IngestOptions = {}) {
     }
   }
   return stats;
+}
+
+// Keep a week of history (so the calendar can page back) and drop anything older.
+const KEEP_PAST_DAYS = 7;
+// Announced films are listed this far ahead (matches the Upcoming feed), whatever
+// window the showtime scrape itself covers.
+const ANNOUNCED_HORIZON_DAYS = 90;
+
+async function trimOldShowtimes() {
+  try {
+    const cutoff = DateTime.now().setZone(THEATRE_TIMEZONE).startOf("day").minus({ days: KEEP_PAST_DAYS });
+    const res = await prisma.showtime.deleteMany({ where: { startsAt: { lt: cutoff.toJSDate() } } });
+    console.log(`  trimmed ${res.count} showtimes before ${cutoff.toISODate()}`);
+  } catch (err) {
+    console.warn("  ! trimming failed:", (err as Error).message);
+  }
+}
+
+// Only overwrite a field when the source actually has a value.
+function detailFields(d: MovieDetails) {
+  return {
+    ...(d.synopsis ? { synopsis: d.synopsis } : {}),
+    ...(d.advisory ? { advisory: d.advisory } : {}),
+    ...(d.cast ? { cast: d.cast } : {}),
+    ...(d.directors ? { directors: d.directors } : {}),
+    ...(d.genre ? { genre: d.genre } : {}),
+    ...(d.trailerUrl ? { trailerUrl: d.trailerUrl } : {}),
+    ...(d.posterUrl ? { amcPosterUrl: d.posterUrl } : {}),
+  };
+}
+
+async function attachMovieDetails(provider: ShowtimeProvider, movieIds: string[]) {
+  if (!provider.getMovieDetails || movieIds.length === 0) return;
+  try {
+    const details = await provider.getMovieDetails(movieIds);
+    let n = 0;
+    for (const [id, d] of details) {
+      const data = detailFields(d);
+      if (Object.keys(data).length === 0) continue;
+      n += (await prisma.movie.updateMany({ where: { id }, data })).count;
+    }
+    console.log(`  movie details: ${n}/${movieIds.length} movies updated`);
+  } catch (err) {
+    console.warn("  ! movie details failed:", (err as Error).message);
+  }
+}
+
+async function refreshAnnounced(provider: ShowtimeProvider, days: number) {
+  if (!provider.getAnnounced) return;
+  let list: AnnouncedMovie[];
+  try {
+    list = (await provider.getAnnounced(days)).filter((m) => !isHiddenTitle(m.title));
+  } catch (err) {
+    console.warn("  ! announced list failed:", (err as Error).message);
+    return; // keep the previous announced flags rather than clearing them
+  }
+  const ok: string[] = [];
+  for (const m of list) {
+    const cls = classify({ title: m.title, attributes: [], releaseYear: null });
+    const shared = {
+      announced: true,
+      amcReleaseDate: m.releaseDate,
+      ...(m.mpaaRating ? { rating: m.mpaaRating } : {}),
+      ...(m.runtimeMinutes ? { runtimeMinutes: m.runtimeMinutes } : {}),
+      ...detailFields(m),
+    };
+    try {
+      await prisma.movie.upsert({
+        where: { id: m.id },
+        create: { id: m.id, slug: m.slug, title: m.title, isSpecialEvent: cls.isSpecialEvent, isClassic: cls.isClassic, ...shared },
+        update: shared,
+      });
+      ok.push(m.id);
+    } catch (err) {
+      console.warn(`  ! announced ${m.title}:`, (err as Error).message);
+    }
+  }
+  const cleared = await prisma.movie.updateMany({ where: { announced: true, id: { notIn: ok } }, data: { announced: false } });
+  console.log(`  announced: ${ok.length} films (cleared ${cleared.count})`);
 }
 
 async function persistDay(
@@ -187,6 +274,10 @@ async function persistDay(
         format: s.format,
         ticketUrl: s.ticketUrl,
         aListExcluded: s.attributes.some((a) => A_LIST_EXCLUDED.test(a)),
+        soldOut: s.soldOut ?? false,
+        almostSoldOut: s.almostSoldOut ?? false,
+        price: s.price ?? null,
+        discount: s.discount ?? null,
       })),
     }),
   ]);

@@ -31,9 +31,24 @@ export interface ApiShowtime {
   format: string | null;
   ticketUrl: string;
   aListExcluded?: boolean; // AMC: this showing isn't A-List eligible
+  soldOut?: boolean;
+  almostSoldOut?: boolean;
+  price?: number | null; // adult, before tax/fees
+  discount?: string | null; // e.g. "20% OFF" on discounted matinees
   movie: Movie;
   theatre: { slug: string; name: string };
   isGem: boolean;
+}
+
+/** A film's own record: everything on Movie plus AMC's descriptive fields. */
+export interface MovieDetail extends Movie {
+  synopsis: string | null;
+  advisory: string | null;
+  cast: string | null;
+  directors: string | null;
+  genre: string | null;
+  trailerUrl: string | null; // embeddable AMC player
+  amcReleaseDate: string | null; // AMC's date (a re-release date for old films)
 }
 
 export interface ApiResponse {
@@ -43,6 +58,8 @@ export interface ApiResponse {
   theatres: { slug: string; name: string }[];
   showtimes: ApiShowtime[];
   total: number;
+  movie?: MovieDetail | null; // with ?movieId=
+  announced?: MovieDetail[]; // with ?announced=1
 }
 
 export function todayISO() {
@@ -124,6 +141,8 @@ export function isCaptionTag(tag: string | null): boolean {
 
 // Posters render small; w185 is plenty and far lighter than the stored w342.
 export function posterSrc(url: string): string {
+  // AMC's Cloudinary art is full-size (~1.5 MB); ask Cloudinary for a thumbnail.
+  if (/\.cloudinary\.com\/v\d+\//.test(url)) return url.replace(/(\.cloudinary\.com\/)(v\d+\/)/, "$1w_185,c_limit,q_auto,f_auto/$2");
   return url.replace(/\/w\d+\//, "/w185/");
 }
 
