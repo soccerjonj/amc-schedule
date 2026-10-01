@@ -144,6 +144,7 @@ export interface TmdbDetail extends TmdbSearchResult {
     results?: Array<{ iso_3166_1?: string; release_dates?: Array<{ certification?: string }> }>;
   };
   credits?: { crew?: Array<{ job?: string; name?: string }> };
+  alternative_titles?: { titles?: Array<{ iso_3166_1?: string; title?: string }> };
 }
 
 // Pull the US MPAA certification (e.g. "PG-13") out of the release_dates payload.
@@ -172,9 +173,14 @@ function titleWords(s: string): string[] {
 // 8 exact · 7 same words · 5 nearly the same · 3 one title's words all inside the
 // other ("Star Wars: The Mandalorian and Grogu" ⊃ "The Mandalorian and Grogu") ·
 // 2 mostly overlapping · 0 unrelated. Checked against TMDB's title and original title.
-function titleScore(d: TmdbSearchResult, queries: string[]): number {
+function titleScore(d: TmdbDetail, queries: string[]): number {
   let best = 0;
-  for (const t of [d.title, d.original_title]) {
+  // US/UK release titles too ("Harry Potter and the Sorcerer's Stone" is TMDB's
+  // US alternate of "…Philosopher's Stone").
+  const alts = (d.alternative_titles?.titles ?? [])
+    .filter((t) => t.iso_3166_1 === "US" || t.iso_3166_1 === "GB")
+    .map((t) => t.title);
+  for (const t of [d.title, d.original_title, ...alts]) {
     if (!t) continue;
     for (const q of queries) {
       if (t.toLowerCase() === q.toLowerCase()) return 8;
@@ -194,18 +200,41 @@ function titleScore(d: TmdbSearchResult, queries: string[]): number {
   return best;
 }
 
-// Same person if the surnames match ("YOSIAKI KAWAJIRI" ~ "Yoshiaki Kawajiri") or
-// the same words in another order ("Zhang Yimou" ~ "Yimou Zhang").
-function nameKey(n: string): { surname: string; sorted: string } {
-  const w = n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z\s-]/g, " ").trim().split(/\s+/).filter(Boolean);
-  return { surname: w.at(-1) ?? "", sorted: [...w].sort().join(" ") };
+// Same person, allowing for how AMC and TMDB differ: name order ("Zhang Yimou" ~
+// "Yimou Zhang"), spacing/hyphens ("Yunjeong Kim" ~ "Kim Yun-jeong"), AMC's
+// garbled letters ("I?arritu" ~ "Iñárritu"), and typos ("Yosiaki" ~ "Yoshiaki").
+function nameWords(n: string): string[] {
+  return n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z?\s-]/g, " ").split(/[\s-]+/).filter(Boolean);
+}
+function nearlySame(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length < 5 || b.length < 5 || Math.abs(a.length - b.length) > 1) return false;
+  // one edit apart ("?" in AMC's data counts as any letter)
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j] || a[i] === "?" || b[j] === "?") { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++;
+    else if (b.length > a.length) j++;
+    else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+function samePerson(x: string, y: string): boolean {
+  const a = nameWords(x);
+  const b = nameWords(y);
+  if (!a.length || !b.length) return false;
+  const letters = (w: string[]) => w.join("").replace(/[^a-z?]/g, "").split("").sort().join("");
+  if (letters(a) === letters(b)) return true; // same letters, any order/spacing
+  if (nearlySame(a.at(-1)!, b.at(-1)!) && a.at(-1)!.length > 2) return true; // surname
+  const shared = a.filter((w) => w.length > 2 && b.some((v) => nearlySame(w, v)));
+  return shared.length >= 2; // e.g. "Alejandro Gonzalez I?arritu" ~ "Alejandro González Iñárritu"
 }
 function directorVerdict(amc: string[], tmdb: string[]): "match" | "conflict" | "unknown" {
   if (!amc.length || !tmdb.length) return "unknown";
-  const A = amc.map(nameKey);
-  const T = tmdb.map(nameKey);
-  const hit = A.some((a) => T.some((t) => (a.surname.length > 2 && a.surname === t.surname) || a.sorted === t.sorted));
-  return hit ? "match" : "conflict";
+  return amc.some((a) => tmdb.some((t) => samePerson(a, t))) ? "match" : "conflict";
 }
 
 const tmdbYear = (d: TmdbSearchResult) => {
@@ -241,7 +270,7 @@ export function scoreTmdbCandidate(
     else if (diff > 25) score -= 4;
   }
 
-  if (ctx.expectedYear && year) score += Math.abs(year - ctx.expectedYear) <= 1 ? 8 : -6;
+  if (ctx.expectedYear && year) score += Math.abs(year - ctx.expectedYear) <= 1 ? 8 : -12;
   else if (norm.year && year === norm.year) score += 4; // "(1993)" in AMC's title
 
   if (ctx.amcYear) {
@@ -259,6 +288,7 @@ export function scoreTmdbCandidate(
 }
 
 const MATCH_THRESHOLD = 8; // an exact title with no contradicting facts
+const STRONG_MATCH = 14; // e.g. exact title + fitting year, or a director match
 const MAX_CANDIDATES = 6;
 
 // "Ken Russell's The Devils" → "The Devils", "Dr. Seuss' How the Grinch…" →
@@ -291,7 +321,7 @@ async function tmdbSearch(query: string, apiKey: string, signal: AbortSignal, ye
 
 async function tmdbGetById(id: number, apiKey: string, signal: AbortSignal): Promise<TmdbDetail | undefined> {
   const res = await tmdbFetch(
-    `${TMDB_BASE}/movie/${id}?api_key=${apiKey}&append_to_response=release_dates,credits`,
+    `${TMDB_BASE}/movie/${id}?api_key=${apiKey}&append_to_response=release_dates,credits,alternative_titles`,
     signal,
   );
   if (res.status === 404) return undefined; // id no longer exists
@@ -362,10 +392,10 @@ export async function matchTmdb(
       const cached = await tmdbGetById(opts.tmdbId, apiKey, signal);
       if (cached) {
         details.push(cached);
-        // A saved match that still verifies, and isn't merely the "classic"
-        // fallback for a current film, is kept without searching again.
+        // Keep a saved match without searching again only on strong evidence
+        // (director, year fit…); a merely-passing one competes with fresh results.
         const v = scoreTmdbCandidate(cached, norm, ctx, queries);
-        if (!v.reject && v.score >= MATCH_THRESHOLD) return { status: "match", ...toResult(cached) };
+        if (!v.reject && v.score >= STRONG_MATCH) return { status: "match", ...toResult(cached) };
       }
     }
 
