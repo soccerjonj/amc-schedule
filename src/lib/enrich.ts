@@ -41,6 +41,10 @@ const TRAILING_SUFFIXES =
 const BRACKET_TAGS = /\s*[([](imax(\s*3d)?|3d|4k|70mm|dolby|dubbed|subtitled|sub|ov|omu)[)\]]/gi;
 // Words that mark a trailing parenthetical as an edition/event annotation (not part
 // of the film's real title): "(2026 Event)", "(Director's Cut)", "(Ghibli Fest 2026)".
+// AMC's short program codes in a trailing paren: "(re)" re-release, "(RE26)"
+// re-release 2026, "(HFS26)" Holiday Fan Series 2026. The digits are the program
+// year, not the film's, so they're stripped without becoming the year tiebreak.
+const PAREN_PROGRAM_CODE = /^\s*(re|[a-z]{1,4}\d{2})\s*$/i;
 const PAREN_ANNOTATION =
   /\b(?:event|re-?release|re-?issue|edition|anniversary|presentation|encore|restored|remastered|in\s+concert|sing-?along|director'?s\s+cut|fan\s+event|special\s+(?:event|engagement|screening)|fest(?:ival)?|ghibli)\b/i;
 // Matches a single trailing "(…)" / "[…]" group so it can be inspected and peeled.
@@ -72,7 +76,7 @@ export function normalizeTitle(raw: string): NormalizedTitle {
     const pm = s.match(TRAILING_PAREN);
     if (!pm) break;
     const ym = pm[1].match(/\b(\d{4})\b/);
-    if (!ym && !PAREN_ANNOTATION.test(pm[1])) break;
+    if (!ym && !PAREN_ANNOTATION.test(pm[1]) && !PAREN_PROGRAM_CODE.test(pm[1])) break;
     if (ym && year == null) year = parseInt(ym[1], 10);
     s = s.slice(0, pm.index).trim();
   }
