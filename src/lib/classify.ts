@@ -32,6 +32,18 @@ const CLASSIC_KEYWORDS = [
   "anniversary", // anniversary screenings are old-film re-releases, not "events"
 ];
 
+// AMC's API tags event screenings (opera, concerts, anniversary/fan events,
+// livestreams) with these attribute labels — verified against every title that
+// carries them. Matched exactly: the bare word "event" would false-match titles.
+const SPECIAL_EVENT_ATTRS = new Set([
+  "event",
+  "alternative content",
+  "live event",
+  "livestream event",
+  "dcdc live",
+  "special guest in-person q&a",
+]);
+
 // AMC exposes these as showtime attribute labels (verified in the live data).
 const INDIE_ATTR = "amc artisan films";
 const FOREIGN_ATTR = "international films";
@@ -65,7 +77,9 @@ export function classify(signals: {
     signals.releaseYear != null && signals.releaseYear <= nowYear - REPERTORY_AGE_YEARS;
   return {
     isClassic: oldFilm || matchesAny(blob, CLASSIC_KEYWORDS),
-    isSpecialEvent: matchesAny(blob, SPECIAL_EVENT_KEYWORDS),
+    isSpecialEvent:
+      matchesAny(blob, SPECIAL_EVENT_KEYWORDS) ||
+      signals.attributes.some((a) => SPECIAL_EVENT_ATTRS.has(a.trim().toLowerCase())),
     isIndie: matchesAny(blob, [INDIE_ATTR]),
     isForeign: matchesAny(blob, [FOREIGN_ATTR]),
   };

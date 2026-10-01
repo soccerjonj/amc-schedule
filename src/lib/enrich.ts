@@ -1,5 +1,5 @@
 // Post-scrape metadata enrichment: movie posters from TMDB, average ratings
-// scraped from Letterboxd. Runs only in the scraper (which has a TMDB key and
+// scraped from Letterboxd. Runs only in the ingestion job (which has a TMDB key and
 // network egress); the web app just reads the stored values. Everything is
 // best-effort and fault-tolerant — a failure leaves the field null and never
 // breaks ingestion. AMC titles are messy ("MET Opera: ... (2026)", "Tekkonkinkreet
@@ -457,8 +457,10 @@ export async function enrichMovies(
           // Full theatrical date: coalesce so a transient TMDB null never clears it.
           releaseDate: tmdb.date ? new Date(tmdb.date) : m.releaseDate,
           // Runtime + MPAA cert from TMDB (coalesced).
-          runtimeMinutes: tmdb.runtime ?? m.runtimeMinutes,
-          rating: tmdb.cert ?? m.rating,
+          // AMC's own rating/runtime (set at ingest by the API provider) win; TMDB
+          // only fills gaps.
+          runtimeMinutes: m.runtimeMinutes ?? tmdb.runtime,
+          rating: m.rating ?? tmdb.cert,
           isClassic: cls.isClassic,
           isSpecialEvent: cls.isSpecialEvent,
           isIndie: cls.isIndie,

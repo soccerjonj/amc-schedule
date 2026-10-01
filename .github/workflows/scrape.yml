@@ -1,9 +1,10 @@
 name: Scrape AMC showtimes
 
-# Playwright can't run on Vercel's serverless functions, so ingestion lives here:
-# a scheduled runner scrapes AMC and writes to the shared Neon Postgres that the
-# Vercel app reads from. Set the DATABASE_URL repo secret to the Neon connection
-# string (postgresql://...). Trigger manually from the Actions tab via run-workflow.
+# Ingestion runs here rather than on Vercel: a scheduled runner pulls AMC showtimes
+# (official API, or the Playwright scraper as a fallback — see SHOWTIME_PROVIDER)
+# and writes to the shared Neon Postgres that the Vercel app reads from. Secrets:
+# DATABASE_URL (Neon), AMC_VENDOR_KEY, TMDB_API_KEY. Trigger manually from the
+# Actions tab via run-workflow.
 on:
   schedule:
     - cron: "0 9 * * *" # once a day, 09:00 UTC (~4am Chicago)
@@ -17,6 +18,10 @@ on:
         description: "Force re-enrich all movies (ignore staleness)"
         required: false
         default: "false"
+      provider:
+        description: "Showtime source: api (AMC official API) or scraper"
+        required: false
+        default: "api"
 
 concurrency:
   group: scrape
@@ -32,6 +37,9 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       PRISMA_DB_PROVIDER: postgresql
       TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }} # posters; scrape still works if unset
+      AMC_VENDOR_KEY: ${{ secrets.AMC_VENDOR_KEY }}
+      # Scheduled runs use the default here; manual runs can pick via the input.
+      SHOWTIME_PROVIDER: ${{ github.event.inputs.provider || 'api' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -66,12 +74,14 @@ jobs:
       # invalidates when the Playwright version changes). On a hit, the install
       # below skips the download and only sets up OS deps.
       - name: Cache Playwright browsers
+        if: env.SHOWTIME_PROVIDER != 'api'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Install Playwright Chromium
+        if: env.SHOWTIME_PROVIDER != 'api'
         run: npx playwright install --with-deps chromium
 
       - name: Scrape

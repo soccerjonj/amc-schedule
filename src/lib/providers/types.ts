@@ -19,6 +19,10 @@ export interface RawShowtime {
   ticketUrl: string;
   /** raw AMC attribute labels, e.g. ["AMC Artisan Films", "Reserved Seating"] */
   attributes: string[];
+  /** MPAA rating from the source, e.g. "PG-13" (API only; scraper leaves unset) */
+  mpaaRating?: string;
+  /** runtime in minutes from the source (API only) */
+  runtimeMinutes?: number;
 }
 
 export interface ShowtimeProvider {

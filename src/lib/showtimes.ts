@@ -98,18 +98,20 @@ export function formatTag(format: string | null): string | null {
   if (f.includes("imax")) return "IMAX";
   if (f.includes("70mm")) return "70mm";
   if (f.includes("dolby")) return "Dolby";
+  if (f.includes("infinity vision")) return "Infinity"; // AMC's newer premium large format
   if (f.includes("prime")) return "Prime";
   if (f.includes("laser")) return "Laser";
   if (/\bxl\b/.test(f)) return "XL";
   if (f.includes("3d")) return "3D";
   if (f.includes("open caption")) return "Open Caption";
-  if (f.includes("subtitle")) return "Subtitled";
+  // "Dubbed" before "subtitle": "English Language Dubbed with No Subtitles" is a dub.
   if (f.includes("dubbed")) return "Dubbed";
+  if (f.includes("subtitle")) return "Subtitled";
   return null;
 }
 
 // Premium format tags, in display order — the set offered as filter chips.
-export const PREMIUM_FORMATS = ["IMAX", "70mm", "Dolby", "Prime", "Laser", "XL", "3D"] as const;
+export const PREMIUM_FORMATS = ["IMAX", "70mm", "Dolby", "Infinity", "Prime", "Laser", "XL", "3D"] as const;
 
 const CAPTION_TAGS = new Set(["Open Caption", "Subtitled", "Dubbed"]);
 

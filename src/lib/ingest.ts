@@ -54,6 +54,11 @@ async function upsertMovieFromShowtimes(
     isIndie: cls.isIndie,
     isForeign: cls.isForeign,
   };
+  // The AMC API reports MPAA rating + runtime for what's actually screening; when
+  // present they win over TMDB's (enrichment only fills gaps). The scraper has none.
+  const rating = shows.find((s) => s.mpaaRating)?.mpaaRating;
+  const runtimeMinutes = shows.find((s) => s.runtimeMinutes)?.runtimeMinutes;
+  const amcMeta = { ...(rating ? { rating } : {}), ...(runtimeMinutes ? { runtimeMinutes } : {}) };
   await prisma.movie.upsert({
     where: { id: movieId },
     create: {
@@ -62,12 +67,14 @@ async function upsertMovieFromShowtimes(
       title: first.movieTitle,
       attributes: JSON.stringify(attributes),
       ...flags,
+      ...amcMeta,
     },
     update: {
       slug: first.movieSlug,
       title: first.movieTitle,
       attributes: JSON.stringify(attributes),
       ...flags,
+      ...amcMeta,
     },
   });
 }
@@ -125,7 +132,7 @@ export async function ingest(opts: IngestOptions = {}) {
     await provider.close();
   }
 
-  // Enrich posters/ratings after the browser is closed. Gated on a TMDB key so
+  // Enrich posters/ratings after the provider is closed. Gated on a TMDB key so
   // keyless local scrapes still succeed (metadata just stays null). Never let
   // enrichment failures fail the scrape.
   if (process.env.TMDB_API_KEY) {

@@ -18,9 +18,12 @@ interface DomShowtime {
 }
 
 /**
- * Scrapes AMC's public showtimes pages with a real headless browser. The site
- * sits behind Cloudflare + a waiting room, which a genuine browser clears; the
- * showtimes are server-rendered into the DOM (no JSON API), so we parse them.
+ * FALLBACK provider (SHOWTIME_PROVIDER unset/"scraper"); the primary source is
+ * AMC's official API (amcApi.ts). Since Sep 2026 amctheatres.com's Cloudflare bot
+ * check blocks this scraper, so it's kept only in case that changes.
+ *
+ * Scrapes AMC's public showtimes pages with a real headless browser; the
+ * showtimes are server-rendered into the DOM, so we parse them.
  * Each showtime anchor's `aria-describedby` encodes the movie slug and points
  * to that screening's attributes list; a page <select> maps slug -> title.
  */
