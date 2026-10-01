@@ -121,6 +121,7 @@ export interface MatchContext {
   runtime?: number | null; // AMC's runtime, minutes
   amcYear?: number | null; // AMC release year (a re-release year for old films)
   reRelease?: boolean; // AMC labels it an anniversary / re-release / Fan Faves screening
+  expectedYear?: number | null; // the film's own year when knowable ("30th Anniversary" in 2026 → 1996)
 }
 
 export type TmdbMatch =
@@ -131,6 +132,7 @@ export type TmdbMatch =
 interface TmdbSearchResult {
   id?: number;
   title?: string;
+  original_title?: string;
   poster_path?: string | null;
   release_date?: string;
 }
@@ -151,25 +153,59 @@ function usCert(d: TmdbDetail | undefined): string | null {
   return cert ? cert.trim() : null;
 }
 
-const compact = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-
-function titleScore(title: string | undefined, norm: NormalizedTitle): number {
-  const t = (title ?? "").toLowerCase();
-  const q = norm.query.toLowerCase();
-  if (t === q) return 8;
-  if (compact(t) === compact(norm.query)) return 7;
-  if (t && (t.startsWith(q) || q.startsWith(t))) return 3;
-  return 0;
+// Title words for comparison: accents/punctuation dropped, "&" = "and", and filler
+// words ignored, so "Harry Potter & Deathly Hallows" ≈ "…and the Deathly Hallows".
+const STOP_WORDS = new Set(["the", "a", "an", "and", "of"]);
+function titleWords(s: string): string[] {
+  return s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w && !STOP_WORDS.has(w));
 }
 
-// Surnames, accent-stripped: AMC's "YOSIAKI KAWAJIRI" still matches TMDB's
-// "Yoshiaki Kawajiri", and "Joe Russo, Anthony Russo" matches either brother.
-function surnames(names: string[]): Set<string> {
-  return new Set(
-    names
-      .map((n) => n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim().split(/\s+/).pop() ?? "")
-      .filter((n) => n.length > 1),
-  );
+// 8 exact · 7 same words · 5 nearly the same · 3 one title's words all inside the
+// other ("Star Wars: The Mandalorian and Grogu" ⊃ "The Mandalorian and Grogu") ·
+// 2 mostly overlapping · 0 unrelated. Checked against TMDB's title and original title.
+function titleScore(d: TmdbSearchResult, queries: string[]): number {
+  let best = 0;
+  for (const t of [d.title, d.original_title]) {
+    if (!t) continue;
+    for (const q of queries) {
+      if (t.toLowerCase() === q.toLowerCase()) return 8;
+      const a = titleWords(t);
+      const b = titleWords(q);
+      if (!a.length || !b.length) continue;
+      if (a.join(" ") === b.join(" ")) best = Math.max(best, 7);
+      const A = new Set(a);
+      const B = new Set(b);
+      const shared = [...A].filter((w) => B.has(w)).length;
+      const overlap = shared / new Set([...a, ...b]).size;
+      if (overlap >= 0.75) best = Math.max(best, 5);
+      else if (shared >= 2 && shared === Math.min(A.size, B.size)) best = Math.max(best, 3);
+      else if (overlap >= 0.5) best = Math.max(best, 2);
+    }
+  }
+  return best;
+}
+
+// Same person if the surnames match ("YOSIAKI KAWAJIRI" ~ "Yoshiaki Kawajiri") or
+// the same words in another order ("Zhang Yimou" ~ "Yimou Zhang").
+function nameKey(n: string): { surname: string; sorted: string } {
+  const w = n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z\s-]/g, " ").trim().split(/\s+/).filter(Boolean);
+  return { surname: w.at(-1) ?? "", sorted: [...w].sort().join(" ") };
+}
+function directorVerdict(amc: string[], tmdb: string[]): "match" | "conflict" | "unknown" {
+  if (!amc.length || !tmdb.length) return "unknown";
+  const A = amc.map(nameKey);
+  const T = tmdb.map(nameKey);
+  const hit = A.some((a) => T.some((t) => (a.surname.length > 2 && a.surname === t.surname) || a.sorted === t.sorted));
+  return hit ? "match" : "conflict";
 }
 
 const tmdbYear = (d: TmdbSearchResult) => {
@@ -178,25 +214,26 @@ const tmdbYear = (d: TmdbSearchResult) => {
 };
 
 /**
- * Score a TMDB candidate against AMC's facts. `reject` means it's provably a
- * different film (AMC's director isn't among TMDB's directors). Exported for tests.
+ * Score a TMDB candidate against AMC's facts. `reject` means it can't be the film:
+ * AMC's director isn't among TMDB's, or the title is only loosely similar and no
+ * director vouches for it. Exported for tests.
  */
 export function scoreTmdbCandidate(
   d: TmdbDetail,
   norm: NormalizedTitle,
   ctx: MatchContext,
+  queries: string[] = [norm.query],
 ): { score: number; reject: boolean } {
-  const ts = titleScore(d.title, norm);
-  if (ts === 0) return { score: 0, reject: true };
-  let score = ts;
-  const year = tmdbYear(d);
+  const ts = titleScore(d, queries);
+  const dir = directorVerdict(
+    ctx.directors ?? [],
+    (d.credits?.crew ?? []).filter((c) => c.job === "Director").map((c) => c.name ?? ""),
+  );
+  if (dir === "conflict") return { score: ts, reject: true };
+  if (dir !== "match" && ts < 7) return { score: ts, reject: true };
 
-  const amcDirs = surnames(ctx.directors ?? []);
-  const tmdbDirs = surnames((d.credits?.crew ?? []).filter((c) => c.job === "Director").map((c) => c.name ?? ""));
-  if (amcDirs.size && tmdbDirs.size) {
-    if ([...amcDirs].some((n) => tmdbDirs.has(n))) score += 12;
-    else return { score, reject: true };
-  }
+  let score = ts + (dir === "match" ? 12 : 0);
+  const year = tmdbYear(d);
 
   if (ctx.runtime && d.runtime) {
     const diff = Math.abs(ctx.runtime - d.runtime);
@@ -204,11 +241,13 @@ export function scoreTmdbCandidate(
     else if (diff > 25) score -= 4;
   }
 
-  if (norm.year && year === norm.year) score += 4; // "(1993)" in AMC's title
-  if (ctx.amcYear && year) {
-    if (ctx.reRelease) {
-      score += year <= ctx.amcYear - 2 ? 3 : -2; // a re-release is an older film
-    } else {
+  if (ctx.expectedYear && year) score += Math.abs(year - ctx.expectedYear) <= 1 ? 8 : -6;
+  else if (norm.year && year === norm.year) score += 4; // "(1993)" in AMC's title
+
+  if (ctx.amcYear) {
+    if (!year) score -= 3; // undated TMDB stubs shouldn't dodge the year check
+    else if (ctx.reRelease) score += year <= ctx.amcYear - 2 ? 3 : -2; // a re-release is an older film
+    else {
       // A current release: TMDB's date can be a festival premiere a year or two early.
       const gap = ctx.amcYear - year;
       score += gap >= -1 && gap <= 2 ? 5 : -10;
@@ -220,7 +259,14 @@ export function scoreTmdbCandidate(
 }
 
 const MATCH_THRESHOLD = 8; // an exact title with no contradicting facts
-const MAX_CANDIDATES = 5;
+const MAX_CANDIDATES = 6;
+
+// "Ken Russell's The Devils" → "The Devils", "Dr. Seuss' How the Grinch…" →
+// "How the Grinch…": AMC sometimes prefixes a possessive credit TMDB doesn't use.
+function withoutPossessiveCredit(q: string): string | null {
+  const m = q.match(/^(?:[\w.]+\s){0,3}[\w.]+['’]s?\s+(.+)$/);
+  return m && m[1].length >= 3 ? m[1] : null;
+}
 
 async function tmdbFetch(url: string, signal: AbortSignal, retried = false): Promise<Response> {
   const res = await fetch(url, { signal });
@@ -267,6 +313,33 @@ function toResult(d: TmdbDetail): TmdbResult {
   };
 }
 
+/** Best verified candidate, or null. Exported for tests. */
+export function pickVerified(
+  details: TmdbDetail[],
+  norm: NormalizedTitle,
+  ctx: MatchContext,
+  queries: string[] = [norm.query],
+): TmdbDetail | null {
+  const best = (c: MatchContext) => {
+    let top: { d: TmdbDetail; score: number } | null = null;
+    for (const d of details) {
+      const v = scoreTmdbCandidate(d, norm, c, queries);
+      if (!v.reject && v.score >= MATCH_THRESHOLD && (!top || v.score > top.score)) top = { d, score: v.score };
+    }
+    return top?.d ?? null;
+  };
+  const current = best(ctx);
+  if (current || ctx.reRelease) return current;
+  // AMC doesn't always label re-releases (its holiday classics show as 2026 films).
+  // If no current film by this name exists, allow the classic — but only when the
+  // runtime doesn't contradict, so a brand-new film missing from TMDB isn't swapped
+  // for an old namesake.
+  const classic = best({ ...ctx, reRelease: true });
+  if (!classic) return null;
+  if (ctx.runtime && classic.runtime && Math.abs(ctx.runtime - classic.runtime) > 10) return null;
+  return classic;
+}
+
 /**
  * Find the TMDB film AMC is actually showing. A previously saved id is re-checked
  * against AMC's facts (so old mistakes self-correct); otherwise search — also by
@@ -280,32 +353,37 @@ export async function matchTmdb(
 ): Promise<TmdbMatch> {
   const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
   if (!apiKey) return { status: "error" };
+  const alt = withoutPossessiveCredit(norm.query);
+  const queries = alt ? [norm.query, alt] : [norm.query];
   try {
-    const signal = opts.signal ?? AbortSignal.timeout(15000);
+    const signal = opts.signal ?? AbortSignal.timeout(20000);
+    const details: TmdbDetail[] = [];
     if (opts.tmdbId) {
       const cached = await tmdbGetById(opts.tmdbId, apiKey, signal);
       if (cached) {
-        const v = scoreTmdbCandidate(cached, norm, ctx);
+        details.push(cached);
+        // A saved match that still verifies, and isn't merely the "classic"
+        // fallback for a current film, is kept without searching again.
+        const v = scoreTmdbCandidate(cached, norm, ctx, queries);
         if (!v.reject && v.score >= MATCH_THRESHOLD) return { status: "match", ...toResult(cached) };
       }
     }
 
-    const byYear =
-      ctx.amcYear && !ctx.reRelease ? await tmdbSearch(norm.query, apiKey, signal, ctx.amcYear) : [];
-    const plain = await tmdbSearch(norm.query, apiKey, signal);
-    const seen = new Set<number>();
-    const candidates = [...byYear, ...plain]
-      .filter((r) => typeof r.id === "number" && !seen.has(r.id) && seen.add(r.id) && titleScore(r.title, norm) > 0)
+    const results = [
+      ...(ctx.amcYear && !ctx.reRelease ? await tmdbSearch(norm.query, apiKey, signal, ctx.amcYear) : []),
+      ...(await tmdbSearch(norm.query, apiKey, signal)),
+      ...(alt ? await tmdbSearch(alt, apiKey, signal) : []),
+    ];
+    const seen = new Set<number>(details.map((d) => d.id!));
+    const candidates = results
+      .filter((r) => typeof r.id === "number" && !seen.has(r.id) && seen.add(r.id))
       .slice(0, MAX_CANDIDATES);
-
-    let best: { d: TmdbDetail; score: number } | null = null;
     for (const c of candidates) {
       const d = await tmdbGetById(c.id!, apiKey, signal);
-      if (!d) continue;
-      const v = scoreTmdbCandidate(d, norm, ctx);
-      if (!v.reject && v.score >= MATCH_THRESHOLD && (!best || v.score > best.score)) best = { d, score: v.score };
+      if (d) details.push(d);
     }
-    return best ? { status: "match", ...toResult(best.d) } : { status: "none" };
+    const pick = pickVerified(details, norm, ctx, queries);
+    return pick ? { status: "match", ...toResult(pick) } : { status: "none" };
   } catch {
     return { status: "error" };
   }
@@ -382,7 +460,8 @@ export async function fetchLetterboxdForTmdb(tmdbId: number, signal?: AbortSigna
 
 // AMC's own re-release signals: anniversary/remaster/encore wording, "(re)"/"(RE26)"
 // codes, an explicit "(1993)" year, or the Fan Faves / AMC Classics programs.
-const RE_RELEASE_TITLE = /anniversar|remaster|restor|re-?release|\bencore\b|\(re\)|\((?:re|[a-z]{1,4})\d{2}\)|\(\d{4}\)/i;
+const RE_RELEASE_TITLE =
+  /anniversar|remaster|restor|re-?release|\bencore\b|\(re\)|\((?:re|[a-z]{1,4})\d{2}\)|\(\d{4}\)|\b\d{1,3}(?:st|nd|rd|th)\b.*\bfest\b/i;
 const RE_RELEASE_ATTR = /fan fave|amc classics|flashback|throwback/i;
 export function looksReRelease(title: string, attributes: string[]): boolean {
   return RE_RELEASE_TITLE.test(title) || attributes.some((a) => RE_RELEASE_ATTR.test(a));
@@ -478,6 +557,8 @@ export async function enrichMovies(
         amcYear: m.amcReleaseDate ? m.amcReleaseDate.getUTCFullYear() : null,
         reRelease: looksReRelease(m.title, attrs),
       };
+      const nth = m.title.match(/\b(\d{1,3})(?:st|nd|rd|th)\b/i);
+      if (nth && ctx.amcYear && /anniversar|celebrat/i.test(m.title)) ctx.expectedYear = ctx.amcYear - Number(nth[1]);
       const tmdb = await matchTmdb(norm, ctx, { apiKey, tmdbId: m.tmdbId });
       if (tmdb.status === "error") {
         stats.errors++; // transient — keep existing data, retry next run
