@@ -26,6 +26,7 @@ import {
   TimeChip,
 } from "@/components/showtime-ui";
 import { useTheatreOrder } from "@/components/use-theatre-order";
+import { useAListOnly } from "@/components/use-alist-only";
 
 type Category = "all" | "gems" | "classic" | "special";
 type Density = "compact" | "list";
@@ -92,6 +93,7 @@ function Calendar() {
   const [showHidden, setShowHidden] = useState(false);
   const [showOrder, setShowOrder] = useState(false);
   const { order: theatreOrder, setOrder: setTheatreOrder, resetOrder: resetTheatreOrder } = useTheatreOrder();
+  const { aListOnly, setAListOnly } = useAListOnly();
   const barRef = useRef<HTMLDivElement>(null);
 
   // Month grid is Sunday-aligned; the week view starts at the anchor as-is.
@@ -180,8 +182,9 @@ function Calendar() {
   }, []);
 
   const visibleShowtimes = useMemo(
-    () => (data?.showtimes ?? []).filter((s) => !hidden.has(s.movie.id)),
-    [data, hidden],
+    () =>
+      (data?.showtimes ?? []).filter((s) => !hidden.has(s.movie.id) && !(aListOnly && s.aListExcluded)),
+    [data, hidden, aListOnly],
   );
   const byDay = useMemo(() => groupByDay(visibleShowtimes), [visibleShowtimes]);
   const upcomingBuckets = useMemo(
@@ -403,6 +406,17 @@ function Calendar() {
                 );
               })}
             </div>
+            <span className="mx-1 hidden h-5 w-px bg-line-2 sm:block" aria-hidden="true" />
+            <button
+              aria-pressed={aListOnly}
+              onClick={() => setAListOnly(!aListOnly)}
+              title="Hide showings AMC excludes from A-List (saved in this browser)"
+              className={`rounded-full px-2.5 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                aListOnly ? "bg-accent/20 text-accent ring-1 ring-accent/40" : "border border-line-2 text-ink-2 hover:text-ink"
+              }`}
+            >
+              A-List only
+            </button>
             <p className="ml-1 hidden text-[11px] text-ink-3 sm:block">
               <span className="font-semibold text-gem">Gems</span> = easy-to-miss screenings (throwbacks, special
               events, rare & indie).

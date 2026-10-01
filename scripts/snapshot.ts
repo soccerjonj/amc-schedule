@@ -23,6 +23,7 @@ async function main() {
       movieId: s.movieId,
       format: s.format,
       ticketUrl: s.ticketUrl,
+      aListExcluded: s.aListExcluded,
       movie: {
         id: s.movie.id,
         title: s.movie.title,

@@ -55,6 +55,7 @@ model Showtime {
   startsAt        DateTime // absolute instant (stored UTC; sourced as America/Chicago)
   format          String? // e.g. "Dolby Cinema at AMC Prime", "Laser at AMC"
   ticketUrl       String
+  aListExcluded   Boolean  @default(false) // AMC "Excluded from A-List" on this showing
   sourceUpdatedAt DateTime @updatedAt
 
   @@index([startsAt])

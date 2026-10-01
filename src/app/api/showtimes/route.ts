@@ -38,6 +38,7 @@ interface Row {
   movieId: string;
   format: string | null;
   ticketUrl: string;
+  aListExcluded: boolean;
   movie: {
     id: string;
     title: string;
@@ -101,6 +102,7 @@ async function loadData(p: LoadParams): Promise<{ rows: Row[]; theatres: { slug:
       format: s.format,
       ticketUrl: s.ticketUrl,
       // Older snapshots predate some fields — tolerate their absence.
+      aListExcluded: (s as { aListExcluded?: boolean }).aListExcluded ?? false,
       movie: {
         ...s.movie,
         releaseDate: (s.movie as { releaseDate?: string | null }).releaseDate ?? null,
@@ -168,6 +170,7 @@ export async function GET(req: NextRequest) {
       time: DateTime.fromJSDate(r.startsAt, { zone: THEATRE_TIMEZONE }).toFormat("h:mm a"),
       format: r.format,
       ticketUrl: r.ticketUrl,
+      aListExcluded: r.aListExcluded,
       movie: {
         id: r.movie.id,
         title: r.movie.title,

@@ -30,6 +30,7 @@ export interface ApiShowtime {
   time: string;
   format: string | null;
   ticketUrl: string;
+  aListExcluded?: boolean; // AMC: this showing isn't A-List eligible
   movie: Movie;
   theatre: { slug: string; name: string };
   isGem: boolean;

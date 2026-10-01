@@ -161,14 +161,17 @@ export function TimeChip({
   const tag = formatTag(s.format);
   const label = `Buy tickets for ${movieTitle} at ${s.theatre.name}, ${dayLabel} ${s.time}${
     tag ? `, ${tag}` : ""
-  } — opens AMC in a new tab`;
+  }${s.aListExcluded ? ", not eligible for A-List" : ""} — opens AMC in a new tab`;
   return (
     <a
       href={s.ticketUrl}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={label}
-      className="inline-flex items-center rounded border border-line bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none text-ink transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      title={s.aListExcluded ? "Not eligible for A-List" : undefined}
+      className={`inline-flex items-center rounded border bg-surface-3 px-1.5 py-1 text-[11px] font-medium tabular-nums leading-none transition hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        s.aListExcluded ? "border-dashed border-ink-3/60 text-ink-2" : "border-line text-ink"
+      }`}
     >
       {compactTime(s.time)}
     </a>

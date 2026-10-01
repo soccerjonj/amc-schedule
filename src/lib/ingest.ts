@@ -86,6 +86,9 @@ export interface IngestOptions {
 
 const MAX_CONSECUTIVE_FAILURES = 5;
 
+// AMC flags individual showings (often events/premium) as not A-List eligible.
+const A_LIST_EXCLUDED = /excluded from a-?list/i;
+
 export async function ingest(opts: IngestOptions = {}) {
   const days = opts.days ?? 14;
   const theatres = opts.theatres ?? SEED_THEATRES;
@@ -183,6 +186,7 @@ async function persistDay(
         startsAt: s.startsAt,
         format: s.format,
         ticketUrl: s.ticketUrl,
+        aListExcluded: s.attributes.some((a) => A_LIST_EXCLUDED.test(a)),
       })),
     }),
   ]);

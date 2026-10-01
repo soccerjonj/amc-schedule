@@ -29,6 +29,7 @@ import {
   TimeChip,
 } from "./showtime-ui";
 import { useTheatreOrder } from "./use-theatre-order";
+import { useAListOnly } from "./use-alist-only";
 
 function detailRuntime(min: number): string {
   const h = Math.floor(min / 60);
@@ -38,9 +39,16 @@ function detailRuntime(min: number): string {
 
 export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: string }) {
   const router = useRouter();
-  const [shows, setShows] = useState<ApiShowtime[] | null>(null);
+  const [allShows, setShows] = useState<ApiShowtime[] | null>(null);
   const [error, setError] = useState(false);
   const { order: theatreOrder } = useTheatreOrder();
+  const { aListOnly, setAListOnly } = useAListOnly();
+  // With "A-List only" on, drop showings AMC excludes from A-List.
+  const shows = useMemo(
+    () => (allShows && aListOnly ? allShows.filter((s) => !s.aListExcluded) : allShows),
+    [allShows, aListOnly],
+  );
+  const aListHidden = (allShows?.length ?? 0) - (shows?.length ?? 0);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -127,7 +135,16 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
         <p className="py-20 text-center text-sm text-ink-3">Loading…</p>
       ) : shows.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">
-          <p className="text-sm text-ink-3">No upcoming showtimes for this {kind}.</p>
+          <p className="text-sm text-ink-3">
+            {aListHidden > 0
+              ? `All ${aListHidden} upcoming showings are excluded from A-List.`
+              : `No upcoming showtimes for this ${kind}.`}
+          </p>
+          {aListHidden > 0 && (
+            <button onClick={() => setAListOnly(false)} className="text-sm font-medium text-accent hover:underline">
+              Show them anyway
+            </button>
+          )}
           <Link href="/" className="rounded-full bg-accent px-4 py-1.5 text-sm font-semibold text-black">
             Back to calendar
           </Link>
@@ -152,6 +169,14 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
                 </div>
               )}
               {metaParts.length > 0 && <p className="text-sm text-ink-3">{metaParts.join(" · ")}</p>}
+              {aListHidden > 0 && (
+                <p className="text-xs text-ink-3">
+                  A-List only: {aListHidden} excluded showing{aListHidden === 1 ? "" : "s"} hidden ·{" "}
+                  <button onClick={() => setAListOnly(false)} className="font-medium text-accent hover:underline">
+                    show all
+                  </button>
+                </p>
+              )}
 
               {theatresList.length > 0 && (
                 <p className="text-xs text-ink-2">
