@@ -105,12 +105,28 @@ export function normalizeTitle(raw: string): NormalizedTitle {
 export interface TmdbResult {
   posterUrl: string | null;
   tmdbId: number | null;
-  year: number | null; // release year of the matched film — used to disambiguate Letterboxd
-  title: string | null; // canonical title — used to build the Letterboxd slug
+  year: number | null; // release year of the matched film
+  title: string | null; // TMDB's canonical title
   date: string | null; // full release_date (YYYY-MM-DD) — premiere vs re-screening signal
   runtime: number | null; // minutes, from the TMDB movie detail
   cert: string | null; // US MPAA certification, e.g. "PG-13"
 }
+
+/**
+ * What AMC tells us about the film actually screening — used to verify a TMDB
+ * match instead of trusting the title alone (remakes and same-titled films).
+ */
+export interface MatchContext {
+  directors?: string[]; // AMC's director list
+  runtime?: number | null; // AMC's runtime, minutes
+  amcYear?: number | null; // AMC release year (a re-release year for old films)
+  reRelease?: boolean; // AMC labels it an anniversary / re-release / Fan Faves screening
+}
+
+export type TmdbMatch =
+  | ({ status: "match" } & TmdbResult)
+  | { status: "none" } // searched; nothing verifies → prefer blank over wrong
+  | { status: "error" }; // network/API failure → keep whatever we had
 
 interface TmdbSearchResult {
   id?: number;
@@ -119,12 +135,13 @@ interface TmdbSearchResult {
   release_date?: string;
 }
 
-// The /movie/{id} detail (with append_to_response=release_dates) adds runtime + certs.
-interface TmdbDetail extends TmdbSearchResult {
+// /movie/{id} with append_to_response=release_dates,credits.
+export interface TmdbDetail extends TmdbSearchResult {
   runtime?: number;
   release_dates?: {
     results?: Array<{ iso_3166_1?: string; release_dates?: Array<{ certification?: string }> }>;
   };
+  credits?: { crew?: Array<{ job?: string; name?: string }> };
 }
 
 // Pull the US MPAA certification (e.g. "PG-13") out of the release_dates payload.
@@ -134,117 +151,169 @@ function usCert(d: TmdbDetail | undefined): string | null {
   return cert ? cert.trim() : null;
 }
 
-// TMDB search is popularity-ranked, so for a low-popularity (often unreleased)
-// title like "Toy Story 5" the first hit is frequently a poster-less stub or a
-// more-popular wrong match. Score instead: exact/near title match, then year,
-// then break ties toward a result that actually has poster art — falling back to
-// TMDB's own order.
-export function pickTmdbResult(
-  results: TmdbSearchResult[],
-  norm: NormalizedTitle,
-): TmdbSearchResult | undefined {
-  if (!results.length) return undefined;
-  const norm0 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+const compact = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function titleScore(title: string | undefined, norm: NormalizedTitle): number {
+  const t = (title ?? "").toLowerCase();
   const q = norm.query.toLowerCase();
-  const qc = norm0(norm.query);
-  const score = (r: TmdbSearchResult) => {
-    let s = 0;
-    const t = (r.title ?? "").toLowerCase();
-    if (t === q) s += 8;
-    else if (norm0(t) === qc) s += 7;
-    else if (t.startsWith(q) || q.startsWith(t)) s += 3;
-    if (norm.year && (r.release_date ?? "").slice(0, 4) === String(norm.year)) s += 4;
-    if (r.poster_path) s += 1; // tiebreak toward art
-    return s;
-  };
-  return results
-    .map((r, i) => ({ r, s: score(r), i }))
-    .sort((a, b) => b.s - a.s || a.i - b.i)[0].r;
+  if (t === q) return 8;
+  if (compact(t) === compact(norm.query)) return 7;
+  if (t && (t.startsWith(q) || q.startsWith(t))) return 3;
+  return 0;
 }
 
-async function tmdbSearch(
-  query: string,
-  apiKey: string,
-  signal: AbortSignal,
-  retried = false,
-): Promise<TmdbSearchResult[]> {
-  const url = `${TMDB_BASE}/search/movie?api_key=${apiKey}&include_adult=false&query=${encodeURIComponent(query)}`;
+// Surnames, accent-stripped: AMC's "YOSIAKI KAWAJIRI" still matches TMDB's
+// "Yoshiaki Kawajiri", and "Joe Russo, Anthony Russo" matches either brother.
+function surnames(names: string[]): Set<string> {
+  return new Set(
+    names
+      .map((n) => n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim().split(/\s+/).pop() ?? "")
+      .filter((n) => n.length > 1),
+  );
+}
+
+const tmdbYear = (d: TmdbSearchResult) => {
+  const y = parseInt((d.release_date ?? "").slice(0, 4), 10);
+  return Number.isNaN(y) ? null : y;
+};
+
+/**
+ * Score a TMDB candidate against AMC's facts. `reject` means it's provably a
+ * different film (AMC's director isn't among TMDB's directors). Exported for tests.
+ */
+export function scoreTmdbCandidate(
+  d: TmdbDetail,
+  norm: NormalizedTitle,
+  ctx: MatchContext,
+): { score: number; reject: boolean } {
+  const ts = titleScore(d.title, norm);
+  if (ts === 0) return { score: 0, reject: true };
+  let score = ts;
+  const year = tmdbYear(d);
+
+  const amcDirs = surnames(ctx.directors ?? []);
+  const tmdbDirs = surnames((d.credits?.crew ?? []).filter((c) => c.job === "Director").map((c) => c.name ?? ""));
+  if (amcDirs.size && tmdbDirs.size) {
+    if ([...amcDirs].some((n) => tmdbDirs.has(n))) score += 12;
+    else return { score, reject: true };
+  }
+
+  if (ctx.runtime && d.runtime) {
+    const diff = Math.abs(ctx.runtime - d.runtime);
+    if (diff <= 10) score += 3;
+    else if (diff > 25) score -= 4;
+  }
+
+  if (norm.year && year === norm.year) score += 4; // "(1993)" in AMC's title
+  if (ctx.amcYear && year) {
+    if (ctx.reRelease) {
+      score += year <= ctx.amcYear - 2 ? 3 : -2; // a re-release is an older film
+    } else {
+      // A current release: TMDB's date can be a festival premiere a year or two early.
+      const gap = ctx.amcYear - year;
+      score += gap >= -1 && gap <= 2 ? 5 : -10;
+    }
+  }
+
+  if (d.poster_path) score += 1;
+  return { score, reject: false };
+}
+
+const MATCH_THRESHOLD = 8; // an exact title with no contradicting facts
+const MAX_CANDIDATES = 5;
+
+async function tmdbFetch(url: string, signal: AbortSignal, retried = false): Promise<Response> {
   const res = await fetch(url, { signal });
   if (res.status === 429 && !retried) {
     const ra = Number(res.headers.get("retry-after")) || 1;
     await sleep(Math.min(ra, 10) * 1000);
-    return tmdbSearch(query, apiKey, signal, true);
+    return tmdbFetch(url, signal, true);
   }
-  if (!res.ok) return [];
+  return res;
+}
+
+async function tmdbSearch(query: string, apiKey: string, signal: AbortSignal, year?: number): Promise<TmdbSearchResult[]> {
+  const res = await tmdbFetch(
+    `${TMDB_BASE}/search/movie?api_key=${apiKey}&include_adult=false&query=${encodeURIComponent(query)}` +
+      (year ? `&primary_release_year=${year}` : ""),
+    signal,
+  );
+  if (!res.ok) throw new Error(`TMDB search ${res.status}`);
   const data = (await res.json()) as { results?: TmdbSearchResult[] };
   return Array.isArray(data.results) ? data.results : [];
 }
 
-async function tmdbGetById(
-  id: number,
-  apiKey: string,
-  signal: AbortSignal,
-): Promise<TmdbDetail | undefined> {
-  const res = await fetch(
-    `${TMDB_BASE}/movie/${id}?api_key=${apiKey}&append_to_response=release_dates`,
-    { signal },
+async function tmdbGetById(id: number, apiKey: string, signal: AbortSignal): Promise<TmdbDetail | undefined> {
+  const res = await tmdbFetch(
+    `${TMDB_BASE}/movie/${id}?api_key=${apiKey}&append_to_response=release_dates,credits`,
+    signal,
   );
-  if (!res.ok) return undefined;
+  if (res.status === 404) return undefined; // id no longer exists
+  if (!res.ok) throw new Error(`TMDB movie ${res.status}`);
   const m = (await res.json()) as TmdbDetail;
   return typeof m.id === "number" ? m : undefined;
 }
 
-export async function fetchTmdbPoster(
-  norm: NormalizedTitle,
-  opts: { apiKey?: string; signal?: AbortSignal; tmdbId?: number | null } = {},
-): Promise<TmdbResult> {
-  const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
-  const empty: TmdbResult = {
-    posterUrl: null, tmdbId: null, year: null, title: null, date: null, runtime: null, cert: null,
+function toResult(d: TmdbDetail): TmdbResult {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(d.release_date ?? "") ? d.release_date! : null;
+  return {
+    posterUrl: d.poster_path ? `${TMDB_IMG}${d.poster_path}` : null,
+    tmdbId: typeof d.id === "number" ? d.id : null,
+    year: tmdbYear(d),
+    title: d.title ?? null,
+    date,
+    runtime: typeof d.runtime === "number" && d.runtime > 0 ? d.runtime : null,
+    cert: usCert(d),
   };
-  if (!apiKey) return empty;
+}
+
+/**
+ * Find the TMDB film AMC is actually showing. A previously saved id is re-checked
+ * against AMC's facts (so old mistakes self-correct); otherwise search — also by
+ * AMC's release year for current films, so a little-known 2026 remake isn't buried
+ * under the famous original — and keep the best candidate that verifies.
+ */
+export async function matchTmdb(
+  norm: NormalizedTitle,
+  ctx: MatchContext,
+  opts: { apiKey?: string; signal?: AbortSignal; tmdbId?: number | null } = {},
+): Promise<TmdbMatch> {
+  const apiKey = opts.apiKey ?? process.env.TMDB_API_KEY;
+  if (!apiKey) return { status: "error" };
   try {
-    const signal = opts.signal ?? AbortSignal.timeout(8000);
-    // Already-resolved movies: fetch by id (1 request, no re-matching). Otherwise
-    // search, then fetch the matched id's detail so we get runtime + certification
-    // (search results don't include those).
-    let pick = opts.tmdbId ? await tmdbGetById(opts.tmdbId, apiKey, signal) : undefined;
-    if (!pick) {
-      const found = pickTmdbResult(await tmdbSearch(norm.query, apiKey, signal), norm);
-      pick = found?.id ? ((await tmdbGetById(found.id, apiKey, signal)) ?? found) : found;
+    const signal = opts.signal ?? AbortSignal.timeout(15000);
+    if (opts.tmdbId) {
+      const cached = await tmdbGetById(opts.tmdbId, apiKey, signal);
+      if (cached) {
+        const v = scoreTmdbCandidate(cached, norm, ctx);
+        if (!v.reject && v.score >= MATCH_THRESHOLD) return { status: "match", ...toResult(cached) };
+      }
     }
-    if (!pick) return empty;
-    const y = pick.release_date ? parseInt(pick.release_date.slice(0, 4), 10) : NaN;
-    // Keep the full date only when it's a well-formed YYYY-MM-DD (TMDB can return "").
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(pick.release_date ?? "") ? pick.release_date! : null;
-    return {
-      posterUrl: pick.poster_path ? `${TMDB_IMG}${pick.poster_path}` : null,
-      tmdbId: typeof pick.id === "number" ? pick.id : null,
-      year: Number.isNaN(y) ? null : y,
-      title: pick.title ?? null,
-      date,
-      runtime: typeof pick.runtime === "number" && pick.runtime > 0 ? pick.runtime : null,
-      cert: usCert(pick),
-    };
+
+    const byYear =
+      ctx.amcYear && !ctx.reRelease ? await tmdbSearch(norm.query, apiKey, signal, ctx.amcYear) : [];
+    const plain = await tmdbSearch(norm.query, apiKey, signal);
+    const seen = new Set<number>();
+    const candidates = [...byYear, ...plain]
+      .filter((r) => typeof r.id === "number" && !seen.has(r.id) && seen.add(r.id) && titleScore(r.title, norm) > 0)
+      .slice(0, MAX_CANDIDATES);
+
+    let best: { d: TmdbDetail; score: number } | null = null;
+    for (const c of candidates) {
+      const d = await tmdbGetById(c.id!, apiKey, signal);
+      if (!d) continue;
+      const v = scoreTmdbCandidate(d, norm, ctx);
+      if (!v.reject && v.score >= MATCH_THRESHOLD && (!best || v.score > best.score)) best = { d, score: v.score };
+    }
+    return best ? { status: "match", ...toResult(best.d) } : { status: "none" };
   } catch {
-    return empty;
+    return { status: "error" };
   }
 }
 
 export interface LetterboxdResult {
   rating: number | null; // 0–5
   url: string | null;
-}
-
-function slugify(s: string): string {
-  return s
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/['’.]/g, "")
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 }
 
 interface FilmLd {
@@ -289,70 +358,34 @@ function parseFilmLd(html: string): FilmLd {
   return { rating: null, year: null };
 }
 
-async function fetchFilmPage(
-  url: string,
-  signal: AbortSignal,
-): Promise<{ status: number } & FilmLd> {
-  const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html" }, signal });
-  if (res.status === 404) return { status: 404, rating: null, year: null };
-  if (!res.ok) return { status: res.status, rating: null, year: null };
+/**
+ * Letterboxd's page for an exact TMDB id: letterboxd.com/tmdb/<id>/ redirects to
+ * the film itself, so the link is right whenever the TMDB match is — no guessing
+ * from titles. Returns nulls if Letterboxd doesn't have the film; throws on
+ * network trouble (the caller keeps what it had).
+ */
+export async function fetchLetterboxdForTmdb(tmdbId: number, signal?: AbortSignal): Promise<LetterboxdResult> {
+  const res = await fetch(`${LB_BASE}/tmdb/${tmdbId}/`, {
+    headers: { "User-Agent": UA, Accept: "text/html" },
+    signal: signal ?? AbortSignal.timeout(10000),
+  });
+  if (res.status === 404) return { rating: null, url: null };
+  if (!res.ok) throw new Error(`Letterboxd ${res.status}`);
   const html = await res.text();
-  // A real Cloudflare interstitial has this title; the site also references
-  // /cdn-cgi/challenge-platform/ on *every* normal page, so don't match on that.
-  if (/<title>\s*just a moment/i.test(html)) return { status: 503, rating: null, year: null };
-  return { status: 200, ...parseFilmLd(html) };
+  // A real Cloudflare interstitial has this title (the normal page merely references
+  // /cdn-cgi/challenge-platform/, so don't match on that).
+  if (/<title>\s*just a moment/i.test(html)) throw new Error("Letterboxd challenge");
+  const url = res.url.split("?")[0];
+  if (!/^https:\/\/letterboxd\.com\/film\/[^/]+\/$/.test(url)) return { rating: null, url: null };
+  return { rating: parseFilmLd(html).rating, url };
 }
 
-// Resolves the correct Letterboxd film and returns its average rating. The bare
-// slug ("/film/passenger/") points at the canonical/oldest film of that title, so
-// for a new release ("Passenger" -> 1963) the target year (from the TMDB match)
-// selects the year-suffixed slug Letterboxd uses to disambiguate. We also try a
-// slug built from TMDB's *canonical* title, since AMC's wording often differs
-// ("Ballad of Ricky Bobby" vs Letterboxd's "The Ballad of Ricky Bobby"). The
-// Letterboxd search endpoint is Cloudflare-gated, so slug guessing is all we have.
-// Network errors propagate (the caller keeps any existing value); a definitive
-// "no right-year film" returns null so a wrong rating is cleared rather than kept.
-export async function fetchLetterboxdRating(
-  norm: NormalizedTitle,
-  opts: {
-    signal?: AbortSignal;
-    year?: number | null;
-    altTitle?: string | null;
-    knownUrl?: string | null;
-  } = {},
-): Promise<LetterboxdResult> {
-  const sig = () => opts.signal ?? AbortSignal.timeout(8000);
-  // Already-resolved movies: refresh the rating straight from the known film page
-  // (1 request) instead of re-running slug guessing. Fall through if it's gone.
-  if (opts.knownUrl) {
-    const page = await fetchFilmPage(opts.knownUrl, sig());
-    if (page.status === 200) return { rating: page.rating, url: opts.knownUrl };
-  }
-  const target = opts.year ?? norm.year ?? null;
-  const yearClose = (y: number | null) => target == null || y == null || Math.abs(y - target) <= 1;
-
-  // Candidate base slugs: AMC's wording first, then TMDB's canonical title.
-  const bases = [...new Set([slugify(norm.query), opts.altTitle ? slugify(opts.altTitle) : ""])].filter(
-    Boolean,
-  );
-  if (!bases.length) return { rating: null, url: null };
-
-  let fallbackUrl: string | null = null; // a year-matching page that just has no rating yet
-  for (const base of bases) {
-    const candidates = [`${LB_BASE}/film/${base}/`];
-    if (target != null) {
-      for (const y of [target, target - 1, target + 1]) candidates.push(`${LB_BASE}/film/${base}-${y}/`);
-    }
-    for (const url of candidates) {
-      const page = await fetchFilmPage(url, sig());
-      if (page.status === 200 && yearClose(page.year)) {
-        if (page.rating != null) return { rating: page.rating, url };
-        fallbackUrl ??= url;
-      }
-    }
-  }
-
-  return { rating: null, url: fallbackUrl };
+// AMC's own re-release signals: anniversary/remaster/encore wording, "(re)"/"(RE26)"
+// codes, an explicit "(1993)" year, or the Fan Faves / AMC Classics programs.
+const RE_RELEASE_TITLE = /anniversar|remaster|restor|re-?release|\bencore\b|\(re\)|\((?:re|[a-z]{1,4})\d{2}\)|\(\d{4}\)/i;
+const RE_RELEASE_ATTR = /fan fave|amc classics|flashback|throwback/i;
+export function looksReRelease(title: string, attributes: string[]): boolean {
+  return RE_RELEASE_TITLE.test(title) || attributes.some((a) => RE_RELEASE_ATTR.test(a));
 }
 
 export interface EnrichStats {
@@ -361,6 +394,8 @@ export interface EnrichStats {
   lbHits: number;
   misses: number;
   errors: number;
+  corrected: number; // saved TMDB match replaced by a verified one
+  cleared: number; // saved match removed because nothing verifies
 }
 
 const DAY_MS = 86_400_000;
@@ -372,11 +407,16 @@ export async function enrichMovies(
     maxMovies?: number;
     tmdbApiKey?: string;
     force?: boolean; // re-check every movie, ignoring the staleness gate
+    dryRun?: boolean; // compute and log changes, but write nothing
   } = {},
 ): Promise<EnrichStats> {
   const staleAfterDays = opts.staleAfterDays ?? 7;
   const missRetryDays = opts.missRetryDays ?? 30;
   const force = opts.force ?? false;
+  const dryRun = opts.dryRun ?? false;
+  // Every write goes through here so a dry run can preview without saving.
+  const save = (id: string, data: Parameters<typeof prisma.movie.update>[0]["data"]) =>
+    dryRun ? Promise.resolve() : prisma.movie.update({ where: { id }, data }).then(() => undefined);
   const maxMovies = opts.maxMovies ?? (force ? 2000 : 300);
   const apiKey = opts.tmdbApiKey ?? process.env.TMDB_API_KEY;
 
@@ -409,68 +449,100 @@ export async function enrichMovies(
     take: maxMovies,
   });
 
-  const stats: EnrichStats = { considered: movies.length, tmdbHits: 0, lbHits: 0, misses: 0, errors: 0 };
+  const stats: EnrichStats = {
+    considered: movies.length,
+    tmdbHits: 0,
+    lbHits: 0,
+    misses: 0,
+    errors: 0,
+    corrected: 0,
+    cleared: 0,
+  };
 
   for (const m of movies) {
     const norm = normalizeTitle(m.title);
     // Skip structural events (opera/sports/concert) so we never mis-match them.
     if ((m.isSpecialEvent && norm.eventLike) || !norm.query) {
-      await prisma.movie
-        .update({ where: { id: m.id }, data: { metadataCheckedAt: new Date() } })
-        .catch(() => {});
+      await save(m.id, { metadataCheckedAt: new Date() }).catch(() => {});
       stats.misses++;
       continue;
     }
 
     try {
-      // TMDB first so its matched release year can disambiguate the Letterboxd film.
-      // Reuse cached ids (tmdbId / letterboxdUrl) so re-checks skip search + slug
-      // guessing — just refresh by id/url.
-      const tmdb = await fetchTmdbPoster(norm, { apiKey, tmdbId: m.tmdbId });
-      let lb: LetterboxdResult | null = null;
-      try {
-        lb = await fetchLetterboxdRating(norm, {
-          year: tmdb.year ?? norm.year,
-          altTitle: tmdb.title,
-          knownUrl: m.letterboxdUrl,
-        });
-      } catch {
-        lb = null; // network failure — keep any existing rating
+      // Verify against what AMC says is screening (director, runtime, release year)
+      // rather than trusting the title — and re-check any saved match the same way.
+      const attrs = parseAttrs(m.attributes);
+      const ctx: MatchContext = {
+        directors: m.directors?.split(",").map((d) => d.trim()).filter(Boolean),
+        runtime: m.runtimeMinutes,
+        amcYear: m.amcReleaseDate ? m.amcReleaseDate.getUTCFullYear() : null,
+        reRelease: looksReRelease(m.title, attrs),
+      };
+      const tmdb = await matchTmdb(norm, ctx, { apiKey, tmdbId: m.tmdbId });
+      if (tmdb.status === "error") {
+        stats.errors++; // transient — keep existing data, retry next run
+        continue;
       }
 
-      if (tmdb.posterUrl) stats.tmdbHits++;
-      if (lb?.rating != null) stats.lbHits++;
-      if (!tmdb.posterUrl && lb?.rating == null) stats.misses++;
-
-      // Re-run classification now that we know the release year, so the
-      // old-film => Classic/Fan Fave heuristic takes effect immediately.
-      const year = tmdb.year ?? m.releaseYear ?? null;
-      const cls = classify({ title: m.title, attributes: parseAttrs(m.attributes), releaseYear: year });
-
-      await prisma.movie.update({
-        where: { id: m.id },
-        data: {
-          // Posters: coalesce (never clear a good poster on a transient TMDB null).
-          tmdbId: tmdb.tmdbId ?? m.tmdbId,
-          posterUrl: tmdb.posterUrl ?? m.posterUrl,
-          // Letterboxd: if the lookup actually ran (lb != null), trust its result even
-          // when null — that's how a wrong match (e.g. 1963 "Passenger") gets corrected.
-          letterboxdRating: lb ? lb.rating : m.letterboxdRating,
-          letterboxdUrl: lb ? lb.url : m.letterboxdUrl,
-          releaseYear: year,
-          // Full theatrical date: coalesce so a transient TMDB null never clears it.
-          releaseDate: tmdb.date ? new Date(tmdb.date) : m.releaseDate,
-          // Runtime + MPAA cert from TMDB (coalesced).
-          // AMC's own rating/runtime (set at ingest by the API provider) win; TMDB
-          // only fills gaps.
-          runtimeMinutes: m.runtimeMinutes ?? tmdb.runtime,
-          rating: m.rating ?? tmdb.cert,
+      if (tmdb.status === "none") {
+        // Nothing verifies: clear any earlier (possibly wrong) match. AMC's own poster
+        // still shows; blank beats a wrong film's rating and year.
+        const cls = classify({ title: m.title, attributes: attrs, releaseYear: null });
+        if (m.tmdbId || m.letterboxdUrl) console.log(`    ✗ cleared  ${m.title}  (was ${m.letterboxdUrl ?? `tmdb ${m.tmdbId}`})`);
+        await save(m.id, {
+          tmdbId: null,
+          posterUrl: null,
+          letterboxdRating: null,
+          letterboxdUrl: null,
+          releaseYear: null,
+          releaseDate: null,
           isClassic: cls.isClassic,
           isSpecialEvent: cls.isSpecialEvent,
           isIndie: cls.isIndie,
           isForeign: cls.isForeign,
           metadataCheckedAt: new Date(),
-        },
+        });
+        if (m.tmdbId || m.letterboxdUrl) stats.cleared++;
+        stats.misses++;
+        continue;
+      }
+
+      // Letterboxd straight from the TMDB id — exact, no title guessing.
+      let lb: LetterboxdResult | null = null;
+      try {
+        lb = tmdb.tmdbId ? await fetchLetterboxdForTmdb(tmdb.tmdbId) : { rating: null, url: null };
+      } catch {
+        lb = null; // network trouble — keep the existing rating/link
+      }
+
+      if (tmdb.posterUrl) stats.tmdbHits++;
+      if (lb?.rating != null) stats.lbHits++;
+      if (m.tmdbId && tmdb.tmdbId !== m.tmdbId) stats.corrected++;
+      const newUrl = lb ? lb.url : m.letterboxdUrl;
+      if (newUrl !== m.letterboxdUrl || (m.tmdbId && tmdb.tmdbId !== m.tmdbId)) {
+        console.log(`    ↻ ${m.title}  ${m.letterboxdUrl ?? "(none)"} → ${newUrl ?? "(none)"}  [${tmdb.year ?? "?"}]`);
+      }
+
+      // Re-run classification with the verified release year, so the
+      // old-film => Throwback heuristic is right.
+      const year = tmdb.year;
+      const cls = classify({ title: m.title, attributes: attrs, releaseYear: year });
+
+      await save(m.id, {
+        tmdbId: tmdb.tmdbId,
+        posterUrl: tmdb.posterUrl,
+        letterboxdRating: lb ? lb.rating : m.letterboxdRating,
+        letterboxdUrl: lb ? lb.url : m.letterboxdUrl,
+        releaseYear: year,
+        releaseDate: tmdb.date ? new Date(tmdb.date) : null,
+        // AMC's own rating/runtime (set at ingest) win; TMDB only fills gaps.
+        runtimeMinutes: m.runtimeMinutes ?? tmdb.runtime,
+        rating: m.rating ?? tmdb.cert,
+        isClassic: cls.isClassic,
+        isSpecialEvent: cls.isSpecialEvent,
+        isIndie: cls.isIndie,
+        isForeign: cls.isForeign,
+        metadataCheckedAt: new Date(),
       });
     } catch {
       stats.errors++;

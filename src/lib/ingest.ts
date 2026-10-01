@@ -149,8 +149,9 @@ export async function ingest(opts: IngestOptions = {}) {
   if (process.env.TMDB_API_KEY) {
     try {
       const force = process.env.ENRICH_FORCE === "true" || process.env.ENRICH_FORCE === "1";
-      const e = await enrichMovies({ force });
-      console.log(`  enrich${force ? " (forced)" : ""}:`, e);
+      const dryRun = process.env.ENRICH_DRY_RUN === "true" || process.env.ENRICH_DRY_RUN === "1";
+      const e = await enrichMovies({ force, dryRun });
+      console.log(`  enrich${force ? " (forced)" : ""}${dryRun ? " (DRY RUN — nothing saved)" : ""}:`, e);
     } catch (err) {
       console.warn("  ! enrichment failed:", (err as Error).message);
     }
@@ -184,6 +185,7 @@ function detailFields(d: MovieDetails) {
     ...(d.genre ? { genre: d.genre } : {}),
     ...(d.trailerUrl ? { trailerUrl: d.trailerUrl } : {}),
     ...(d.posterUrl ? { amcPosterUrl: d.posterUrl } : {}),
+    ...(d.releaseDate ? { amcReleaseDate: d.releaseDate } : {}),
   };
 }
 

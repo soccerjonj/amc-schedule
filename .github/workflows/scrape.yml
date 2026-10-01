@@ -19,6 +19,10 @@ on:
         description: "Force re-enrich all movies (ignore staleness)"
         required: false
         default: "false"
+      dry_run:
+        description: "Enrichment dry run: log poster/Letterboxd match changes without saving"
+        required: false
+        default: "false"
       provider:
         description: "Showtime source: api (AMC official API) or scraper"
         required: false
@@ -88,6 +92,7 @@ jobs:
       - name: Scrape
         env:
           ENRICH_FORCE: ${{ github.event.inputs.force }}
+          ENRICH_DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: npm run scrape -- --days "${{ github.event.inputs.days || '90' }}"
 
       # Keep the bundled fallback (served when DATABASE_URL is unset) in sync with

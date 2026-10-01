@@ -41,6 +41,8 @@ export interface MovieDetails {
   genre?: string;
   trailerUrl?: string;
   posterUrl?: string;
+  /** AMC's release date (a re-release date for old films) */
+  releaseDate?: Date;
 }
 
 /** A film announced as coming soon with no showtimes posted anywhere yet. */

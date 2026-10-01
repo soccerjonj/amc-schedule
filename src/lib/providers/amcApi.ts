@@ -195,6 +195,7 @@ export function mapApiMovieDetails(m: ApiMovie): MovieDetails {
     genre: tidyGenre(m.genre),
     trailerUrl: trailerEmbedUrl(m.media),
     posterUrl: m.media?.posterDynamic?.trim() || undefined,
+    releaseDate: m.releaseDateUtc && !m.releaseDateUtc.startsWith("1900") ? new Date(m.releaseDateUtc) : undefined,
   };
 }
 
