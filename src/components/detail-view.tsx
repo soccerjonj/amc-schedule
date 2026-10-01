@@ -30,7 +30,7 @@ import {
   TimeChip,
 } from "./showtime-ui";
 import { useTheatreOrder } from "./use-theatre-order";
-import { useAListOnly } from "./use-alist-only";
+import { AListOnlyContext, useAListOnly } from "./use-alist-only";
 
 function detailRuntime(min: number): string {
   const h = Math.floor(min / 60);
@@ -123,6 +123,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
   if (shows && shows.length) metaParts.push(`${shows.length} showtime${shows.length === 1 ? "" : "s"} · ${days.length} day${days.length === 1 ? "" : "s"}`);
 
   return (
+    <AListOnlyContext.Provider value={aListOnly}>
     <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-4">
       <button
         onClick={() => (typeof window !== "undefined" && window.history.length > 1 ? router.back() : router.push("/"))}
@@ -260,6 +261,7 @@ export function DetailPage({ kind, param }: { kind: "movie" | "series"; param: s
         </>
       )}
     </main>
+    </AListOnlyContext.Provider>
   );
 }
 

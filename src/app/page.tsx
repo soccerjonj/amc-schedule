@@ -27,7 +27,7 @@ import {
   TimeChip,
 } from "@/components/showtime-ui";
 import { useTheatreOrder } from "@/components/use-theatre-order";
-import { useAListOnly } from "@/components/use-alist-only";
+import { AListOnlyContext, useAListOnly } from "@/components/use-alist-only";
 
 type Category = "all" | "gems" | "classic" | "special";
 type Density = "compact" | "list";
@@ -260,7 +260,7 @@ function Calendar() {
   const rangeLabel = mode === "month" ? formatMonthRange(gridStart) : formatRange(weekStart);
 
   return (
-    <>
+    <AListOnlyContext.Provider value={aListOnly}>
       <header ref={barRef} className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1500px] flex-col gap-2.5 px-4 py-2.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -606,7 +606,7 @@ function Calendar() {
           </div>
         )}
       </main>
-    </>
+    </AListOnlyContext.Provider>
   );
 }
 

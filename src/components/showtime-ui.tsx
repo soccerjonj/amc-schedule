@@ -4,7 +4,7 @@
 // src/lib/showtimes.ts (server-safe); we re-export them here so existing imports
 // from "@/components/showtime-ui" keep working unchanged.
 
-import { useState } from "react";
+import { useContext, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type Movie,
@@ -16,6 +16,7 @@ import {
 } from "@/lib/showtimes";
 
 export * from "@/lib/showtimes";
+import { AListOnlyContext } from "./use-alist-only";
 
 export function FilmIcon({ className }: { className?: string }) {
   return (
@@ -159,11 +160,13 @@ export function TimeChip({
   dayLabel: string;
 }) {
   const tag = formatTag(s.format);
+  // A-List members don't pay per ticket, so prices/discounts are noise in that mode.
+  const aListOnly = useContext(AListOnlyContext);
   // Status details shown on hover and read to screen readers.
   const notes = [
     s.soldOut ? "Sold out" : s.almostSoldOut ? "Almost sold out" : "",
-    s.discount ? `${s.discount.toLowerCase()} matinee` : "",
-    s.price != null ? `Adult $${s.price.toFixed(2)} + tax` : "",
+    !aListOnly && s.discount ? `${s.discount.toLowerCase()} matinee` : "",
+    !aListOnly && s.price != null ? `Adult $${s.price.toFixed(2)} + tax` : "",
     s.aListExcluded ? "Not eligible for A-List" : "",
   ].filter(Boolean);
   const label = `Buy tickets for ${movieTitle} at ${s.theatre.name}, ${dayLabel} ${s.time}${
@@ -181,11 +184,6 @@ export function TimeChip({
       } ${s.soldOut ? "text-ink-3 line-through opacity-60" : s.aListExcluded ? "text-ink-2" : "text-ink"}`}
     >
       {compactTime(s.time)}
-      {s.discount && !s.soldOut && (
-        <span aria-hidden="true" className="ml-0.5 text-[9px] font-bold text-emerald-400">
-          %
-        </span>
-      )}
       {s.almostSoldOut && !s.soldOut && (
         <span
           aria-hidden="true"

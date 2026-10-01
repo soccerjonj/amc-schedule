@@ -2,7 +2,7 @@
 // Saved in this browser's localStorage (like hidden movies / theatre order) since
 // it describes the visitor's membership, not a one-off filter.
 
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useEffect, useState } from "react";
 
 const ALIST_ONLY_KEY = "amc:alistOnly";
 
@@ -20,3 +20,7 @@ export function useAListOnly() {
 
   return { aListOnly, setAListOnly };
 }
+
+// Lets deeply nested time chips know the visitor is in A-List mode (where ticket
+// prices and matinee discounts don't apply) without prop-drilling.
+export const AListOnlyContext = createContext(false);
