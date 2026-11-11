@@ -48,6 +48,14 @@ const RARE_DAYS = 3; // ≤ this many distinct play-dates across the horizon ⇒
 const ANNOUNCED_PREVIEW = 8; // announced films shown before "Show all"
 
 type Mode = "week" | "month" | "upcoming";
+type SortKey = "default" | "rating" | "newest" | "oldest";
+
+const SORTS: { v: SortKey; label: string }[] = [
+  { v: "default", label: "Gems first" },
+  { v: "rating", label: "Letterboxd rating" },
+  { v: "newest", label: "Newest release" },
+  { v: "oldest", label: "Oldest release" },
+];
 
 function loadHidden(): Map<string, string> {
   if (typeof window === "undefined") return new Map();
@@ -86,6 +94,7 @@ function Calendar() {
     const m = params.get("mode");
     return m === "month" || m === "upcoming" ? m : "week";
   });
+  const [sort, setSort] = useState<SortKey>(() => asSort(params.get("sort")));
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -141,9 +150,10 @@ function Calendar() {
     if (debouncedQuery) p.set("q", debouncedQuery);
     if (density !== "compact") p.set("view", density);
     if (mode !== "week") p.set("mode", mode);
+    if (sort !== "default") p.set("sort", sort);
     const qs = p.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  }, [weekStart, category, selectedTheatres, selectedFormats, debouncedQuery, density, mode, pathname, router]);
+  }, [weekStart, category, selectedTheatres, selectedFormats, debouncedQuery, density, mode, sort, pathname, router]);
 
   useEffect(() => {
     // Upcoming is always anchored at today over the full horizon; week/month follow the anchor.
@@ -190,17 +200,33 @@ function Calendar() {
     [data, hidden, aListOnly],
   );
   const byDay = useMemo(() => groupByDay(visibleShowtimes), [visibleShowtimes]);
+  // The month grid keeps its own notability ranking; the sort applies to week cards.
+  const sortedByDay = useMemo(
+    () =>
+      sort === "default"
+        ? byDay
+        : Object.fromEntries(Object.entries(byDay).map(([d, gs]) => [d, sortMovies(gs, sort, (g) => g.movie)])),
+    [byDay, sort],
+  );
   // Announced films (no showtimes anywhere yet) — only in the unfiltered feed, since
   // they have no theatre/format/category data to filter on.
   const announced = useMemo(() => {
     if (category !== "all" || selectedFormats.length || selectedTheatres.length) return [];
     const q = debouncedQuery.toLowerCase();
-    return (data?.announced ?? []).filter((m) => !hidden.has(m.id) && (!q || m.title.toLowerCase().includes(q)));
-  }, [data, hidden, category, selectedFormats, selectedTheatres, debouncedQuery]);
-  const upcomingBuckets = useMemo(
-    () => (mode === "upcoming" ? aggregateUpcoming(visibleShowtimes) : EMPTY_UPCOMING),
-    [mode, visibleShowtimes],
-  );
+    const list = (data?.announced ?? []).filter(
+      (m) => !hidden.has(m.id) && (!q || m.title.toLowerCase().includes(q)),
+    );
+    // Most announced films aren't matched to TMDB yet; AMC's date is their real release.
+    return sortMovies(list, sort, (m) => (m.releaseDate ? m : { ...m, releaseDate: m.amcReleaseDate }));
+  }, [data, hidden, category, selectedFormats, selectedTheatres, debouncedQuery, sort]);
+  const upcomingBuckets = useMemo(() => {
+    if (mode !== "upcoming") return EMPTY_UPCOMING;
+    const buckets = aggregateUpcoming(visibleShowtimes);
+    if (sort === "default") return buckets;
+    const out = { ...buckets };
+    for (const k of Object.keys(out) as UpcomingBucketKey[]) out[k] = sortMovies(out[k], sort, (it) => it.movie);
+    return out;
+  }, [mode, visibleShowtimes, sort]);
   // Theatre chips (and the order panel) follow the visitor's saved order.
   const theatres = useMemo(
     () =>
@@ -287,7 +313,7 @@ function Calendar() {
               </div>
             )}
 
-            <div className="ml-auto flex items-center gap-2.5">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               <span className="text-xs text-ink-3" aria-live="polite">
                 {loading ? (
                   "updating…"
@@ -308,6 +334,7 @@ function Calendar() {
                   {hidden.size} hidden
                 </button>
               )}
+              {mode !== "month" && <SortSelect value={sort} onChange={setSort} />}
               {mode === "week" && <DensityToggle value={density} onChange={setDensity} />}
               <ModeToggle value={mode} onChange={setMode} />
             </div>
@@ -579,7 +606,7 @@ function Calendar() {
               <DayColumn
                 key={day}
                 day={day}
-                groups={byDay[day] ?? []}
+                groups={sortedByDay[day] ?? []}
                 density={density}
                 theatreOrder={theatreOrder}
                 onHide={hideMovie}
@@ -607,6 +634,30 @@ function Calendar() {
         )}
       </main>
     </AListOnlyContext.Provider>
+  );
+}
+
+function SortSelect({ value, onChange }: { value: SortKey; onChange: (s: SortKey) => void }) {
+  return (
+    <label
+      className={`flex items-center gap-1 rounded-full border py-0.5 pl-2.5 pr-1 text-xs font-medium transition focus-within:ring-2 focus-within:ring-accent ${
+        value === "default" ? "border-line text-ink-3" : "border-accent/40 text-accent"
+      }`}
+    >
+      Sort
+      <select
+        value={value}
+        aria-label="Sort movies"
+        onChange={(e) => onChange(asSort(e.target.value))}
+        className="cursor-pointer rounded-full bg-transparent py-0.5 text-xs font-medium text-ink outline-none"
+      >
+        {SORTS.map((o) => (
+          <option key={o.v} value={o.v} className="bg-surface text-ink">
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -1032,7 +1083,11 @@ const MovieCard = memo(function MovieCard({
   const title = displayTitle(movie.title);
   // Premiere flag: a screening within a week of (or before) the film's release date.
   const isNew = movie.releaseDate ? movie.releaseDate.slice(0, 10) >= shift(day, -7) : false;
-  const metaBits = [movie.rating, movie.runtimeMinutes ? fmtRuntime(movie.runtimeMinutes) : null].filter(
+  const metaBits = [
+    movie.releaseDate?.slice(0, 4),
+    movie.rating,
+    movie.runtimeMinutes ? fmtRuntime(movie.runtimeMinutes) : null,
+  ].filter(
     Boolean,
   ) as string[];
 
@@ -1137,6 +1192,25 @@ function trimGroups(groups: ShowGroup[], limit: number): ShowGroup[] {
 
 function countShows(groups: ShowGroup[]): number {
   return groups.reduce((n, g) => n + g.shows.length, 0);
+}
+
+function asSort(v: string | null): SortKey {
+  return v === "rating" || v === "newest" || v === "oldest" ? v : "default";
+}
+
+// Re-order an already default-ordered list by the chosen key. The sort is stable, so
+// ties keep the default order; films without a rating/date sink to the bottom.
+function sortMovies<T>(items: T[], sort: SortKey, movieOf: (t: T) => Movie): T[] {
+  if (sort === "default") return items;
+  const key = (m: Movie): number | null =>
+    sort === "rating" ? m.letterboxdRating : m.releaseDate ? Date.parse(m.releaseDate) : null;
+  const dir = sort === "oldest" ? 1 : -1;
+  return [...items].sort((a, b) => {
+    const ka = key(movieOf(a));
+    const kb = key(movieOf(b));
+    if (ka == null || kb == null) return ka == null ? (kb == null ? 0 : 1) : -1;
+    return (ka - kb) * dir;
+  });
 }
 
 function asCategory(v: string | null): Category {
@@ -1444,7 +1518,8 @@ function UpcomingItemCard({
     .sort((a, b) => theatreRank(a.slug, theatreOrder) - theatreRank(b.slug, theatreOrder))
     .map((t) => theatreLabel(t.slug, t.name))
     .join(" · ");
-  const meta = [count > 1 ? `${count} ${countWord}` : "", theatres].filter(Boolean).join(" · ");
+  const year = item.isSeries ? "" : movie.releaseDate?.slice(0, 4) ?? "";
+  const meta = [year, count > 1 ? `${count} ${countWord}` : "", theatres].filter(Boolean).join(" · ");
   const showRare = item.bucket === "rare" && !movie.isIndie && !movie.isForeign;
   const hasBadges =
     !item.isSeries && (movie.isClassic || movie.isSpecialEvent || movie.isIndie || movie.isForeign || showRare);
